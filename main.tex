@@ -1,0 +1,575 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+% AAAI/PPAI-style layout (emulated; swap in aaai2x.sty for camera-ready)
+\usepackage[letterpaper,top=0.75in,bottom=1.25in,left=0.75in,right=0.75in,columnsep=0.33in]{geometry}
+\usepackage{times}
+\usepackage{helvet}
+\usepackage{courier}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage[round]{natbib}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0pt}
+\setlist{nosep,leftmargin=*}
+\frenchspacing
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{assumption}{Assumption}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+
+\newcommand{\Ein}{E_{\mathrm{in}}}
+\newcommand{\Eout}{E_{\mathrm{out}}}
+\newcommand{\Eall}{E_{\mathrm{all}}}
+\newcommand{\indep}{\perp\!\!\!\perp}
+\newcommand{\N}{\mathcal{N}}
+
+\title{\Large\bfseries Trust, but Verify: Black-Box Auditing of Opt-Out Compliance\\ in Graph Feature Pipelines}
+\author{Anonymous Authors\\ \normalsize Submitted to the Workshop on Privacy-Preserving Artificial Intelligence (PPAI)}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Platforms that let users opt out of behavioral data use must ensure that no
+interaction of an opted-out user influences downstream features. In
+recommender and marketplace systems, those features are often node embeddings
+and aggregates derived from a customer--item--merchant interaction graph. We
+study how an auditor can verify this property when the feature pipeline is a
+black box, and when the only evidence is a daily sequence of triples
+$(\Ein^t, \Eout^t, F^t)$: opted-in edges, opted-out edges and produced
+node features. We cast compliance as the conditional-independence hypothesis
+$F \indep \Eout \mid \Ein$, and we note that no black-box procedure can
+certify zero use: it can only detect leakage above a threshold and bound what
+remains. We identify the confounders that make naive tests unsound: the
+correlation between opted-in and opted-out behavior, pipeline stochasticity,
+rotational non-identifiability of embeddings and receptive-field mismatch.
+We then propose six tests that exploit the problem's structure: natural
+canaries, zero-difference tests on invariant neighborhoods, opt-out
+status-switch difference-in-differences, residual regression with surrogate
+controls, a membership-inference co-occurrence test with a temporal placebo,
+and active canaries. Evidence is combined across days with anytime-valid
+e-values. In a synthetic study, the calibrated tests keep per-day false-positive
+rates at or below 3\% and raise no false alarm in 30 ten-day audits of a clean
+pipeline. They detect an aggregation bug that leaks 2\% of opted-out edges on
+day one. We also show how two seemingly reasonable test designs produce
+false-positive rates of 18--44\%.
+\end{abstract}
+
+%=====================================================================
+\section{Introduction}
+%=====================================================================
+User-level opt-out is a standard privacy control. Regulations such as the
+GDPR right to object and the CCPA right to opt out make it a legal obligation
+as well as a design choice. Large platforms often store behavior as a
+heterogeneous graph. Customers connect to items through views, saves,
+purchases and reviews, and items connect to the merchants that sell them.
+Downstream models seldom consume this graph directly. They consume
+\emph{node-level features}, such as graph embeddings, GNN
+outputs~\citep{hamilton2017graphsage,he2020lightgcn} and hand-crafted
+aggregates like purchase counts. A feature pipeline produces these
+features, typically once a day.
+
+Honoring an opt-out means that no edge incident to an opted-out customer may
+influence \emph{any} produced feature. That covers the customer's own
+feature and the features of every item and merchant reachable through their
+edges. Filtering bugs break this promise silently: a join that drops the
+consent predicate, a stale cache, or a training job that reads an
+unfiltered snapshot. Code review catches some of these bugs. In practice,
+though, a privacy team or external assessor often cannot inspect the pipeline.
+It observes only what goes in and what comes out.
+
+We study that setting. Each day the auditor receives
+$(\Ein^t, \Eout^t, F^t)$ from a fixed but opaque pipeline and must decide
+whether $F^t$ was computed from $\Ein^t$ alone. Our contributions are:
+\begin{enumerate}
+  \item A formulation of opt-out compliance as conditional independence, with
+        an explicit limit on what black-box evidence can establish
+        (Section~\ref{sec:problem}).
+  \item A catalogue of confounders that invalidate naive tests
+        (Section~\ref{sec:challenges}).
+  \item Six complementary audit tests that target aggregation leakage and
+        representation leakage (Section~\ref{sec:tests}).
+  \item A sequential framework that combines daily evidence with e-values and
+        reports calibrated leakage bounds instead of an unfalsifiable claim of
+        compliance (Section~\ref{sec:stats}).
+  \item A synthetic study of calibration and power, including two instructive
+        calibration failures (Section~\ref{sec:exp}).
+\end{enumerate}
+The framing follows empirical auditing of differential
+privacy~\citep{jagielski2020auditing,nasr2021adversary,steinke2023one}. In
+that setting, black-box experiments yield lower bounds on privacy loss, never
+proofs of privacy. Here they yield detection guarantees above a threshold,
+never proofs of compliance.
+
+%=====================================================================
+\section{Problem Formulation}\label{sec:problem}
+%=====================================================================
+\paragraph{Setup.}
+On day $t$, let $G^t$ be a typed bipartite graph between customers $\mathcal{U}$
+and items $\mathcal{I}$, plus a static item--merchant map $m:\mathcal{I}\to\mathcal{M}$
+and intrinsic item embeddings $x_i\in\mathbb{R}^d$. Each customer $u$ has an
+opt-out status $o_u^t\in\{0,1\}$. The edges split into
+$\Ein^t=\{(u,i,\tau): o_u^t=0\}$ and $\Eout^t=\{(u,i,\tau): o_u^t=1\}$, where $\tau$
+is the interaction type. A fixed pipeline $f$ maps its input to node features
+$F^t=\{F_v^t\}_{v\in\mathcal{U}\cup\mathcal{I}\cup\mathcal{M}}$. The auditor observes
+$\mathcal{D}_T=\{(\Ein^t,\Eout^t,F^t)\}_{t=1}^{T}$ but neither $f$ nor its internal
+randomness $\xi^t$.
+
+\paragraph{Hypothesis.}
+A compliant pipeline satisfies, for some measurable $f_0$,
+\begin{equation}
+  H_0:\; F^t = f_0(\Ein^t, x, \xi^t) \quad \forall t,
+  \label{eq:h0}
+\end{equation}
+with $\xi^t$ independent of $\Eout^t$ given $\Ein^t$. Equivalently,
+$F^t \indep \Eout^t \mid \Ein^t, x$. The alternative is that $F^t$ depends on
+$\Eout^t$ through some channel. Note that this is a \emph{conditional} statement:
+$F$ and $\Eout$ are marginally dependent even under $H_0$, because opted-in and
+opted-out customers draw from the same preference distribution.
+
+\paragraph{Leakage modes.}
+We distinguish two channels:
+\emph{aggregation leakage}, where counts, pooling or message passing include
+some opted-out edges; and \emph{representation leakage}, where trained
+parameters (embedding tables, GNN weights, factorization) are fit on data
+containing opted-out edges, even if inference later uses only $\Ein$. The
+second channel is the harder one to detect. It need not change any feature
+near an opted-out edge, so tests confined to local neighborhoods can miss it.
+
+\paragraph{What cannot be shown.}
+Conditional-independence testing has no uniformly valid test with
+nontrivial power against all
+alternatives~\citep{shah2020hardness}. A simpler argument suffices here.
+
+\begin{proposition}[No certificate of zero use]\label{prop:imposs}
+Let $f_0$ satisfy $H_0$, and let $f_1$ agree with $f_0$ except on an input event of
+per-day probability at most $\delta$, on which it uses $\Eout$ arbitrarily. For any
+test $\phi$ of level $\alpha$ against $f_0$ on $T$ days,
+$\Pr_{f_1}[\phi=1]\le \alpha+T\delta$.
+\end{proposition}
+\begin{proof}[Proof sketch]
+Couple the two pipelines on the same inputs and randomness. Their outputs
+differ only on the union of the per-day events, which has probability at most
+$T\delta$. Hence the total-variation distance between the laws of
+$\mathcal{D}_T$ is at most $T\delta$, and the acceptance probabilities differ by at most
+that much.
+\end{proof}
+Proposition~\ref{prop:imposs} rules out deliberate, sparse leakage. Black-box
+auditing is therefore a tool against \emph{bugs}, not adversarial pipelines. Its
+honest output is a statement of the form ``leakage of magnitude at least
+$\varepsilon$ would have been detected with probability at least $1-\beta$; none was.''
+
+%=====================================================================
+\section{Why Naive Tests Fail}\label{sec:challenges}
+%=====================================================================
+\textbf{C1: Behavioral correlation.} Popular items are popular among both
+groups, and customers with similar tastes buy similar items regardless of
+consent. Hence ``$F$ predicts $\Eout$'' is expected under $H_0$, and any test must
+control for what $\Ein$ already explains.
+
+\textbf{C2: Stochasticity.} Training noise, random initialization and
+approximate solvers make $F^t$ random even for fixed inputs. A change in $F$ is
+not evidence by itself, and the noise floor must be estimated from the data.
+
+\textbf{C3: Non-identifiability.} Retrained embeddings are identified only up
+to an orthogonal transformation (and scale). Day-over-day comparisons require
+alignment, e.g., orthogonal Procrustes~\citep{schonemann1966procrustes}, or
+rotation-invariant statistics such as norms and cosine similarities.
+
+\textbf{C4: Receptive field.} A $k$-hop message-passing feature changes
+whenever anything in its $k$-hop neighborhood changes. Invariance arguments
+must therefore be made at the pipeline's true receptive field, which the
+auditor may have to estimate. Global components, such as a factorization fit
+on the whole graph, have an unbounded receptive field.
+
+\textbf{C5: Edge identity.} Interactions carry types, and the same
+(customer, item) pair can change type between days. Invariance must be
+checked on \emph{typed} edges. Section~\ref{sec:exp} shows that ignoring this
+alone produces a 44\% false-positive rate.
+
+\textbf{C6: Scope of opt-out.} Whether opt-out is retroactive determines the
+correct $\Ein$ when the pipeline consumes history. The auditor must fix this
+definition before testing.
+
+%=====================================================================
+\section{Audit Tests}\label{sec:tests}
+%=====================================================================
+We make one structural assumption, stated for item features; customer and
+merchant features are analogous.
+
+\begin{assumption}[Locality given global state]\label{ass:local}
+Under $H_0$, $F_v^t=\varphi\big(\N_k^{\mathrm{in}}(v), x_v, \Theta^t, \xi_v^t\big)$, where
+$\N_k^{\mathrm{in}}(v)$ is the typed $k$-hop neighborhood of $v$ in $\Ein^t$, and
+$\Theta^t=\theta(\Ein^t,\xi^t)$ is a global state such as trained parameters.
+\end{assumption}
+
+Assumption~\ref{ass:local} holds for message-passing GNNs, feature propagation
+and aggregation layers, with $\Theta$ absorbing anything trained globally. It
+rules out no leakage mode. It only says where, under $H_0$, information may
+come from. Table~\ref{tab:tests} summarizes the tests.
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Test & Targets & Needs & Key control \\
+\midrule
+T1 canary & agg., repr. & long tail & empty $\N^{\mathrm{in}}$ \\
+T2 zero-diff & agg., repr. & churn & invariant $\N_k^{\mathrm{in}}$ \\
+T3 DiD & agg. & status switches & matched items \\
+T4 residual & agg. & --- & surrogate of $\Ein$ \\
+T5 co-occur. & repr. & --- & temporal placebo \\
+T6 active & any & write access & designed canary \\
+\bottomrule
+\end{tabular}
+\caption{Audit tests, the leakage modes they target, what they require, and the control that makes them valid under $H_0$.}
+\label{tab:tests}
+\end{table}
+
+\subsection{T1: Natural canaries}
+Call an item a \emph{natural canary} on day $t$ if every edge incident to it lies
+in $\Eout^t$, i.e., $\N_1^{\mathrm{in}}(i)=\emptyset$ but $\N_1^{\mathrm{out}}(i)\neq\emptyset$. Under
+Assumption~\ref{ass:local}, a canary's feature has the same law as that of a
+\emph{cold} item with no edges at all, conditional on $x_i$. The test compares
+canaries with cold items, matched or adjusted on $x_i$ to address C1. It uses a
+rotation-invariant statistic (C3), here a permutation test on feature norms.
+Opted-out customers are customer-level canaries. Their features must equal the
+pipeline's default output, so an exact check applies whenever that default is
+deterministic. Long-tailed catalogs supply dozens of new canaries every day.
+Because both groups have the same (empty) $\Ein$ neighborhood, this test is
+nearly immune to C1 and C4.
+
+\subsection{T2: Zero-difference on invariant neighborhoods}
+Consider items whose typed $k$-hop $\Ein$ neighborhood is identical on days $t$ and
+$t{+}1$. Among them, \emph{treated} items have a changed $\Eout$ neighborhood, while
+\emph{control} items have none. Under $H_0$ and Assumption~\ref{ass:local}, both groups'
+day-over-day change $\Delta F_i$ arises only from $\Delta\Theta$ and noise. We regress the
+log of the aligned relative change on treatment, adjusting for degree, and
+test the treatment coefficient. For a deterministic $1$-hop aggregate, any
+nonzero change in a treated item is a violation, which gives an exact test.
+
+\subsection{T3: Status-switch difference-in-differences}
+When customer $u$ switches from opted-in to opted-out, every item $u$ touched
+should change by exactly $u$'s contribution. For aggregates, that contribution
+can be computed from the edge list. Comparing these items with matched,
+unaffected items in a difference-in-differences
+design~\citep{angrist2009mostly} detects pipelines that are slow to apply
+new opt-outs (a stale cache). Switches back to opt-in are also informative:
+signal appearing \emph{before} the switch is leakage.
+
+\subsection{T4: Residual regression with surrogate controls}
+Let $S^{\mathrm{out}}_i$ be a summary of $i$'s opted-out edges, such as log degree. Under
+$H_0$, $F_i$ carries no information about $S^{\mathrm{out}}_i$ beyond what $\Ein$ carries.
+The auditor can compute its own \emph{surrogate} features $Z_i=g(\Ein, x)_i$ (typed
+counts, a factorization and a propagation of $x$ over $\Ein$) and test whether
+adding $F_i$ to $Z_i$ improves cross-fitted prediction of $S^{\mathrm{out}}_i$, in the
+spirit of double machine learning~\citep{chernozhukov2018double}. The test is
+valid if $Z$ is rich enough to absorb the dependence between $\Ein$ and $\Eout$,
+which is precisely C1. In our experiments it is conservative.
+
+\subsection{T5: Co-occurrence membership inference with a temporal placebo}
+Representation leakage memorizes structure in the
+parameters~\citep{shokri2017membership,carlini2022first}. On graphs, co-interaction
+is the natural unit~\citep{he2021stealing,olatunji2021membership}. Let
+$\mathcal{R}^t$ be item pairs that co-occur \emph{only} through opted-out customers today.
+Their cosine similarity in $F^t$ should not be elevated. However, such pairs are
+related by taste (C1), so a fixed non-edge baseline is biased.
+
+We therefore construct a \emph{temporal placebo}. Let $\mathcal{Q}^t$ be pairs that
+co-occur only through the \emph{fresh} interactions observed on day $t{+}1$, which
+the day-$t$ pipeline could not have seen. Both sets are draws from the same
+behavior model under identical exclusions: neither pair set co-occurs in
+$\Ein^t$, and each excludes the other source. They therefore share the
+confounding of C1. We regress similarity on group membership, adjusting for
+degree, and test the group effect. Pairs are subsampled to be item-disjoint,
+because overlapping pairs share items and otherwise make the standard errors
+anti-conservative. Section~\ref{sec:exp} shows that both the symmetric
+exclusion and the disjointness are necessary.
+
+\subsection{T6: Active canaries}
+If the auditor can write to the system, it can enroll synthetic opted-out
+accounts whose behavior is drawn from a secret random design, for example
+purchases of a random set of long-tail items. This mirrors canary insertion in
+memorization and DP
+auditing~\citep{carlini2019secret,jagielski2020auditing,steinke2023one}. Because
+the design is randomized, T1 and T5 become randomization tests whose
+validity rests on the auditor's own coin flips, not on behavioral
+exchangeability. The number of canaries directly controls power.
+
+%=====================================================================
+\section{Sequential Evidence and Reporting}\label{sec:stats}
+%=====================================================================
+\paragraph{E-values.}
+Audits run continuously, so stopping at the first small p-value inflates the
+type-I error. We convert each daily p-value $p_t$ into an e-value with the
+calibrator $e_t=\kappa p_t^{\kappa-1}$ ($\kappa=1/2$)~\citep{vovk2021evalues}, and we track
+the e-process $M_T=\prod_{t\le T}e_t$. If each $e_t$ is valid conditional on the past,
+$M_T$ is a test supermartingale. Ville's inequality then gives
+$\Pr_{H_0}[\exists T: M_T\ge 1/\alpha]\le\alpha$, so the auditor may monitor indefinitely and
+stop at any time~\citep{shafer2011test,ramdas2023game}. Daily graphs share
+customers, so conditional validity is an assumption. Sample splitting by
+customer across days, or using only fresh canaries each day, makes it more
+plausible. Several tests are combined by averaging their e-processes, which
+needs no multiplicity correction.
+
+\paragraph{Reporting bounds.}
+The auditor should report a detectable effect size, not ``no leakage.'' For a
+leakage family indexed by $\rho$ (for example, the fraction of opted-out edges
+used), one injects $\rho$-leakage into a \emph{surrogate} pipeline built on the
+observed data. One then calibrates each test's power curve and reports the
+smallest $\rho$ that would have been detected within $T$ days with probability
+$1-\beta$. With active canaries (T6), this calibration runs on the real pipeline.
+
+%=====================================================================
+\section{Experiments}\label{sec:exp}
+%=====================================================================
+\paragraph{Simulator.}
+We simulate 3{,}000 customers, 2{,}000 items with intrinsic embeddings
+$x_i\in\mathbb{R}^{16}$ and Zipf popularity (exponent $1.1$), and 100 merchants. Each
+customer draws $1+\mathrm{Poisson}(7)$ items with probability proportional to
+popularity times $\exp(2\,p_u^\top x_i/4)$. Edge types are view, save, purchase
+and review, with probabilities $0.60/0.15/0.17/0.08$. Each day, 20\% of customers
+redraw their interactions. Opt-out status follows a two-state Markov chain
+with stationary rate 10\% (in$\to$out $0.005$, out$\to$in $0.045$). Each audit spans 10 days.
+
+\paragraph{Pipelines.}
+Item features concatenate (i) typed counts and the number of unique customers
+(aggregation component) with (ii) a rank-16 randomized SVD of the
+type-weighted interaction matrix~\citep{halko2011finding} and (iii) a propagation
+of $x$ over the item--item co-interaction graph, in the style of
+SIGN~\citep{frasca2020sign} (representation component). Customer features are typed counts
+and the mean embedding of their items. The \emph{clean} pipeline uses $\Ein$
+everywhere. The \emph{aggregation-leak} pipeline adds a fraction $\rho$ of opted-out
+edges, selected by a fixed hash, to (i) and customer pooling only. The
+\emph{representation-leak} pipeline adds them to (ii) and (iii) only. The SVD is reseeded
+daily, so all pipelines are stochastic.
+
+\paragraph{Tests.}
+We run T1, T2 ($k{=}1$ for aggregates and $k{=}2$ for embeddings), T4 (ridge,
+5-fold cross-fitting, with surrogate $Z$ = typed log-counts, $x$, a rank-32 SVD
+of $\Ein$ and a propagation over $\Ein$) and T5. T3 overlaps with T2 in this
+simulator, and T6 needs write access, so we omit both. A typical day yields
+34 canaries against 210 cold items, 40 treated and 406 control items for T2,
+and 298 real against 412 placebo item-disjoint pairs for T5.
+
+\paragraph{Calibration.}
+Over 30 clean audits (300 test-days), the per-day rejection rates at $\alpha=0.05$
+are 1\% (T1), 3\% (T2), 0\% (T4) and 2\% (T5). No e-process, individual or
+averaged, crosses $1/\alpha=20$ in any audit.
+
+Two failures along the way are worth reporting, because both look reasonable.
+First, defining T2's invariance on untyped (customer, item) pairs yields a
+\textbf{44\%} false-positive rate. Resampled customers often re-pick the same item
+with a different type, which legitimately changes typed counts (C5). Second,
+building T5's placebo from only the \emph{new} edges of day $t{+}1$, with
+pair-level OLS errors, yields \textbf{18--20\%}. New edges are biased away
+from items a customer already had, and overlapping pairs violate independence.
+Both failures are confounding, not lack of power, and neither is visible
+without a null study.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{power.pdf}
+\caption{Per-day rejection rate ($\alpha=0.05$) against the fraction $\rho$ of opted-out edges leaked, averaged over 5 seeds $\times$ 10 days. Dotted line: nominal level. T4 targets aggregates only, and T5 targets representation leakage only.}
+\label{fig:power}
+\end{figure}
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & \multicolumn{5}{c}{leak rate $\rho$} \\
+\cmidrule(l){2-6}
+Pipeline & .02 & .05 & .10 & .25 & 1.0 \\
+\midrule
+Aggregation leak    & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
+Representation leak & 0/5     & 3/5 (3) & 5/5 (2) & 5/5 (1) & 5/5 (1) \\
+Clean ($\rho{=}0$)   & \multicolumn{5}{c}{0/30 false alarms} \\
+\bottomrule
+\end{tabular}
+\caption{Audits in which the averaged e-process over T1, T2, T4 and T5 reached $20$ within 10 days (median detection day in parentheses).}
+\label{tab:detect}
+\end{table}
+
+\paragraph{Power.}
+Figure~\ref{fig:power} and Table~\ref{tab:detect} summarize the results. For aggregation
+leakage, T1 alone rejects on every day even at $\rho=0.02$, which leaks roughly
+0.2\% of all edges. An opted-out customer with any leaked edge has a non-default
+feature, and the exact check catches it. T2's exact aggregate check follows
+closely. T4 needs $\rho\ge 0.25$: summarizing $\Eout$ by degree throws away the
+identity of the leaked edges. Representation leakage is harder. The combined
+e-process detects it on day 2 at $\rho=0.1$, and in 3 of 5 audits at $\rho=0.05$.
+T1 is again the most powerful single test, because the factorization assigns a
+nonzero embedding to canary items whose training column is no longer empty.
+T5 detects only $\rho\ge 0.25$. It remains valuable, though, because it does not depend
+on long-tail canaries or invariant neighborhoods, which dense graphs and
+merchant-level features may lack.
+
+%=====================================================================
+\section{Discussion and Related Work}
+%=====================================================================
+\paragraph{Relation to DP auditing.}
+DP auditing inserts canaries and measures distinguishability to lower-bound
+$\varepsilon$~\citep{jagielski2020auditing,nasr2021adversary,steinke2023one}. Our tests can be
+read as auditing a degenerate mechanism that should have $\varepsilon=0$ with respect
+to $\Eout$. Two differences matter. The auditor usually cannot choose the
+inputs, hence the emphasis on \emph{natural} experiments (canaries, invariant
+neighborhoods, status switches, temporal placebos). And the reference
+distribution must be built from correlated behavioral data, not from
+a known mechanism.
+
+\paragraph{Relation to unlearning.}
+Verifying that data was removed from a model is studied under machine
+unlearning~\citep{ginart2019making,bourtoule2021machine}, typically with membership
+inference. Opt-out compliance is a continuous, graph-structured version of that
+problem. Removal applies every day, and the influence of removed data spreads
+through neighbors.
+
+\paragraph{Graph privacy attacks.}
+Link-stealing and GNN membership
+inference~\citep{he2021stealing,olatunji2021membership} show that node outputs reveal edges. T5 turns
+this attack into an audit statistic and adds a placebo to separate memorization
+from homophily.
+
+\paragraph{Limitations.}
+Simulations cannot establish calibration on real behavioral data. Before
+deployment, every test should first be run on days or slices where compliance
+is known, such as a pipeline replica fed only $\Ein$. Assumption~\ref{ass:local} and the
+exchangeability behind T5's placebo are modeling choices. Seasonality or
+product launches can break them, and T6 is the remedy when write access
+exists. Daily e-values are not strictly independent. Finally,
+Proposition~\ref{prop:imposs} bounds what any of this can achieve against a
+pipeline that leaks deliberately and sparsely. Code audits, data lineage and
+attested execution remain necessary complements.
+
+%=====================================================================
+\section{Conclusion}
+%=====================================================================
+Opt-out compliance in black-box graph feature pipelines cannot be proven
+from outputs, but it can be falsified efficiently. The most effective
+evidence comes from nodes whose correct output is known in advance: natural
+canaries and invariant neighborhoods. Validity, however, depends on
+details: typed edges, the true receptive field, symmetric placebos and
+dependence between test units. Every audit should begin with a null study, and
+its result should be reported as a calibrated detection bound.
+
+\footnotesize
+\begin{thebibliography}{99}
+\setlength{\itemsep}{1pt}
+
+\bibitem[Angrist and Pischke(2009)]{angrist2009mostly}
+Angrist, J.~D., and Pischke, J.-S. 2009.
+\newblock \emph{Mostly Harmless Econometrics}. Princeton University Press.
+
+\bibitem[Bourtoule et~al.(2021)]{bourtoule2021machine}
+Bourtoule, L.; Chandrasekaran, V.; Choquette-Choo, C.~A.; et~al. 2021.
+\newblock Machine unlearning.
+\newblock In \emph{IEEE Symposium on Security and Privacy}.
+
+\bibitem[Carlini et~al.(2019)]{carlini2019secret}
+Carlini, N.; Liu, C.; Erlingsson, {\'U}.; Kos, J.; and Song, D. 2019.
+\newblock The secret sharer: Evaluating and testing unintended memorization in neural networks.
+\newblock In \emph{USENIX Security Symposium}.
+
+\bibitem[Carlini et~al.(2022)]{carlini2022first}
+Carlini, N.; Chien, S.; Nasr, M.; Song, S.; Terzis, A.; and Tram{\`e}r, F. 2022.
+\newblock Membership inference attacks from first principles.
+\newblock In \emph{IEEE Symposium on Security and Privacy}.
+
+\bibitem[Chernozhukov et~al.(2018)]{chernozhukov2018double}
+Chernozhukov, V.; Chetverikov, D.; Demirer, M.; Duflo, E.; Hansen, C.; Newey, W.; and Robins, J. 2018.
+\newblock Double/debiased machine learning for treatment and structural parameters.
+\newblock \emph{The Econometrics Journal} 21(1).
+
+\bibitem[Frasca et~al.(2020)]{frasca2020sign}
+Frasca, F.; Rossi, E.; Eynard, D.; Chamberlain, B.; Bronstein, M.; and Monti, F. 2020.
+\newblock SIGN: Scalable inception graph neural networks.
+\newblock \emph{arXiv:2004.11198}.
+
+\bibitem[Ginart et~al.(2019)]{ginart2019making}
+Ginart, A.; Guan, M.; Valiant, G.; and Zou, J. 2019.
+\newblock Making AI forget you: Data deletion in machine learning.
+\newblock In \emph{NeurIPS}.
+
+\bibitem[Halko, Martinsson, and Tropp(2011)]{halko2011finding}
+Halko, N.; Martinsson, P.-G.; and Tropp, J.~A. 2011.
+\newblock Finding structure with randomness: Probabilistic algorithms for constructing approximate matrix decompositions.
+\newblock \emph{SIAM Review} 53(2).
+
+\bibitem[Hamilton, Ying, and Leskovec(2017)]{hamilton2017graphsage}
+Hamilton, W.; Ying, Z.; and Leskovec, J. 2017.
+\newblock Inductive representation learning on large graphs.
+\newblock In \emph{NeurIPS}.
+
+\bibitem[He et~al.(2021)]{he2021stealing}
+He, X.; Jia, J.; Backes, M.; Gong, N.~Z.; and Zhang, Y. 2021.
+\newblock Stealing links from graph neural networks.
+\newblock In \emph{USENIX Security Symposium}.
+
+\bibitem[He et~al.(2020)]{he2020lightgcn}
+He, X.; Deng, K.; Wang, X.; Li, Y.; Zhang, Y.; and Wang, M. 2020.
+\newblock LightGCN: Simplifying and powering graph convolution network for recommendation.
+\newblock In \emph{SIGIR}.
+
+\bibitem[Jagielski, Ullman, and Oprea(2020)]{jagielski2020auditing}
+Jagielski, M.; Ullman, J.; and Oprea, A. 2020.
+\newblock Auditing differentially private machine learning: How private is private SGD?
+\newblock In \emph{NeurIPS}.
+
+\bibitem[Nasr et~al.(2021)]{nasr2021adversary}
+Nasr, M.; Song, S.; Thakurta, A.; Papernot, N.; and Carlini, N. 2021.
+\newblock Adversary instantiation: Lower bounds for differentially private machine learning.
+\newblock In \emph{IEEE Symposium on Security and Privacy}.
+
+\bibitem[Olatunji, Nejdl, and Khosla(2021)]{olatunji2021membership}
+Olatunji, I.~E.; Nejdl, W.; and Khosla, M. 2021.
+\newblock Membership inference attack on graph neural networks.
+\newblock In \emph{IEEE TPS-ISA}.
+
+\bibitem[Ramdas et~al.(2023)]{ramdas2023game}
+Ramdas, A.; Gr{\"u}nwald, P.; Vovk, V.; and Shafer, G. 2023.
+\newblock Game-theoretic statistics and safe anytime-valid inference.
+\newblock \emph{Statistical Science} 38(4).
+
+\bibitem[Sch{\"o}nemann(1966)]{schonemann1966procrustes}
+Sch{\"o}nemann, P.~H. 1966.
+\newblock A generalized solution of the orthogonal Procrustes problem.
+\newblock \emph{Psychometrika} 31(1).
+
+\bibitem[Shafer et~al.(2011)]{shafer2011test}
+Shafer, G.; Shen, A.; Vereshchagin, N.; and Vovk, V. 2011.
+\newblock Test martingales, Bayes factors and p-values.
+\newblock \emph{Statistical Science} 26(1).
+
+\bibitem[Shah and Peters(2020)]{shah2020hardness}
+Shah, R.~D., and Peters, J. 2020.
+\newblock The hardness of conditional independence testing and the generalised covariance measure.
+\newblock \emph{The Annals of Statistics} 48(3).
+
+\bibitem[Shokri et~al.(2017)]{shokri2017membership}
+Shokri, R.; Stronati, M.; Song, C.; and Shmatikov, V. 2017.
+\newblock Membership inference attacks against machine learning models.
+\newblock In \emph{IEEE Symposium on Security and Privacy}.
+
+\bibitem[Steinke, Nasr, and Jagielski(2023)]{steinke2023one}
+Steinke, T.; Nasr, M.; and Jagielski, M. 2023.
+\newblock Privacy auditing with one (1) training run.
+\newblock In \emph{NeurIPS}.
+
+\bibitem[Vovk and Wang(2021)]{vovk2021evalues}
+Vovk, V., and Wang, R. 2021.
+\newblock E-values: Calibration, combination and applications.
+\newblock \emph{The Annals of Statistics} 49(3).
+
+\end{thebibliography}
+
+\end{document}
