@@ -546,17 +546,51 @@ a never-bought item with similar intrinsic features. Kyoto Crafts is a
 merchant-level canary, and Bob is a customer-level canary.
 
 \subsection{T2: Zero-difference on invariant neighborhoods}
-Consider items whose typed $k$-hop $\Ein$ neighborhood is identical on days $t$ and
-$t{+}1$. Among them, \emph{treated} items have a changed $\Eout$ neighborhood, while
-\emph{control} items have none. Under $H_0$ and Assumption~\ref{ass:local}, both groups'
-day-over-day change $\Delta F_i$ arises only from $\Delta\Theta$ and noise. We regress the
-log of the aligned relative change on treatment, adjusting for degree, and
-test the treatment coefficient. For a deterministic $1$-hop aggregate, any
-nonzero change in a treated item is a violation, which gives an exact test.
-In Figure~\ref{fig:running}, suppose Bob reviews the Espresso machine on
-Tuesday, while no opted-in edge changes within the Espresso machine's receptive
-field. The Espresso machine is then treated. Its feature may move, but no more
-than the features of control items do (C2).
+T2 compares how much features move overnight for two groups of items whose
+opted-in inputs did not change. It needs two definitions.
+
+\paragraph{Receptive field.}
+Under Assumption~\ref{ass:local}, the only opted-in data that can affect
+$F_v^t$ \emph{locally} is $\N_k^{\mathrm{in}}(v)$: the typed opted-in edges within $k$
+hops of $v$. Everything else reaches $v$ only through the global state
+$\Theta^t$. We call $\N_k^{\mathrm{in}}(v)$ the \emph{receptive field} of $v$. In
+Figure~\ref{fig:running}, suppose the pipeline is a two-layer GNN ($k=2$).
+The Grinder's receptive field then contains its own opted-in edges (Alice's
+view, Carol's purchase) and the other opted-in edges of those customers
+(Alice's purchase of the Espresso machine, Carol's purchase of the Kettle).
+Dan's purchase of the Kettle is three hops away and lies outside it. For a
+purchase count ($k=1$), the receptive field is just the item's own opted-in
+edges.
+
+\paragraph{Opted-out neighborhood.}
+Let $\N^{\mathrm{out}}(v)$ be the set of typed opted-out edges incident to $v$. The
+Espresso machine's opted-out neighborhood is $\{(\text{Bob}, \text{buy})\}$. It
+\emph{changes} between two days when an opted-out customer adds, removes or
+changes the type of an interaction with the item. If Bob also reviews the
+Espresso machine on Tuesday, its opted-out neighborhood becomes
+$\{(\text{Bob},\text{buy}), (\text{Bob},\text{review})\}$.
+
+\paragraph{The test.}
+Select items whose receptive field is identical on days $t$ and $t{+}1$. Under
+$H_0$, the features of these items can still move, but only because $\Theta$ was
+retrained and because of noise (C2). Those causes affect all selected items
+alike. Split the selected items into two groups. \emph{Treated} items have a
+changed opted-out neighborhood, and \emph{control} items do not. A compliant
+pipeline never reads the opted-out edges, so treated items should move no
+more than control items. In Figure~\ref{fig:running}, if Bob reviews the
+Espresso machine on Tuesday and nothing in its receptive field changes, the
+Espresso machine is treated. If its embedding moves noticeably more than those
+of comparable control items, Bob's review leaked.
+
+To implement the test, we align the two days' embeddings (C3), compute each
+item's relative change $\|\Delta F_i\|/\|F_i\|$, and regress its logarithm on
+the treatment indicator and log degree. We then test whether the treatment
+coefficient is positive. For a deterministic 1-hop aggregate, no regression
+is needed: any change in a treated item's count is a violation, which gives an
+exact test. Treatment is defined by the item's \emph{own} opted-out edges,
+because those are the ones a leak affects most. Opted-out changes farther away
+may also move control items under a leak. That dilutes the contrast and costs
+power, but it cannot cause false alarms.
 
 \subsection{T3: Status-switch difference-in-differences}
 When customer $u$ switches from opted-in to opted-out, every item $u$ touched
