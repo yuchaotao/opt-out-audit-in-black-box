@@ -7,6 +7,7 @@
 \usepackage[T1]{fontenc}
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{graphicx}
 \usepackage{enumitem}
 \usepackage[round]{natbib}
@@ -69,13 +70,16 @@ false-positive rates of 18--44\%.
 User-level opt-out is a standard privacy control. Regulations such as the
 GDPR right to object and the CCPA right to opt out make it a legal obligation
 as well as a design choice. Large platforms often store behavior as a
-heterogeneous graph. Customers connect to items through views, saves,
-purchases and reviews, and items connect to the merchants that sell them.
-Downstream models seldom consume this graph directly. They consume
-\emph{node-level features}, such as graph embeddings, GNN
-outputs~\citep{hamilton2017graphsage,he2020lightgcn} and hand-crafted
-aggregates like purchase counts. A feature pipeline produces these
-features, typically once a day.
+heterogeneous graph~\citep{zhu2019aligraph,sarda2019ubereats,borisyuk2024lignn}.
+Customers connect to items through views, saves, purchases and reviews, and
+items connect to the merchants that sell them. Downstream models seldom
+consume this graph directly. They consume \emph{node-level features}, such
+as graph embeddings, GNN
+outputs~\citep{hamilton2017graphsage,ying2018graph,elkishky2022twhin} and
+hand-crafted aggregates like a restaurant's average preparation
+time~\citep{hermann2017michelangelo}. A feature pipeline produces these
+features, typically once a day. Section~\ref{sec:practice} documents this
+practice.
 
 Honoring an opt-out means that no edge incident to an opted-out customer may
 influence \emph{any} produced feature. That covers the customer's own
@@ -133,6 +137,90 @@ privacy~\citep{jagielski2020auditing,nasr2021adversary,steinke2023one}. In
 that setting, black-box experiments yield lower bounds on privacy loss, never
 proofs of privacy. Here they yield detection guarantees above a threshold,
 never proofs of compliance.
+
+%=====================================================================
+\section{The Setting in Practice}\label{sec:practice}
+%=====================================================================
+Both halves of our setting describe standard industrial practice. The first
+half is a typed customer--item--merchant interaction graph. The second is a
+pipeline that turns that graph into node-level features consumed by other
+models. Table~\ref{tab:practice} summarizes published systems.
+
+\begin{table*}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}>{\raggedright}p{1.1in}>{\raggedright}p{1.3in}>{\raggedright}p{1.5in}>{\raggedright}p{1.2in}>{\raggedright\arraybackslash}p{1.4in}@{}}
+\toprule
+System & Entities in the graph & Interaction edges & Node-level output & Downstream consumer \\
+\midrule
+Uber Eats~\citep{sarda2019ubereats} & users, dishes, restaurants & orders (weighted by count), ratings & GraphSAGE embeddings & candidate generation, personalized ranker \\
+Taobao EGES~\citep{wang2018billion} & items (+ shop, brand, category) & co-occurrence in behavior sessions & item embeddings & matching stage of recommendation \\
+AliGraph~\citep{zhu2019aligraph} & buyers, sellers, commodities & user behaviors & GNN embeddings & features for recommendation and search \\
+Pinterest PinSage~\citep{ying2018graph} & pins, boards & saves to boards & GCN embeddings & recommendation \\
+Twitter TwHIN~\citep{elkishky2022twhin} & users, tweets, advertisers & fave, reply, retweet, follow & HIN embeddings & frozen features in ads, follow, search, safety models \\
+LinkedIn LiGNN~\citep{borisyuk2024lignn} & members, posts, jobs, companies & engagements, affinities & GNN embeddings & feed, jobs, ads, people recommendation \\
+Airbnb~\citep{grbovic2018real} & users, listings & clicks, bookings (sessions) & listing embeddings & similarity features in search ranking \\
+DoorDash~\citep{koch2018doordash} & consumers, stores & orders & store embeddings & store-feed ranking \\
+Uber Michelangelo~\citep{hermann2017michelangelo} & restaurants & orders & aggregates (e.g., 7-day mean prep time) & shared feature store, updated daily \\
+\midrule
+Tmall IJCAI-15~\citep{tmall2015} & users, items, merchants, brands & click, add-to-cart, purchase, favorite & --- & public benchmark \\
+Taobao UserBehavior~\citep{taobao2018} & users, items, categories & pv, cart, fav, buy & --- & public benchmark \\
+\bottomrule
+\end{tabular}
+\caption{Published systems and datasets that match our setting: typed interaction graphs between customers, items and merchants, turned into node-level embeddings or aggregates that other models consume.}
+\label{tab:practice}
+\end{table*}
+
+\paragraph{The graph.}
+Public e-commerce logs record exactly our schema. The Tmall repeat-buyer
+dataset logs each interaction with a user, item, category, merchant and
+brand, plus one of four action types: click, add-to-cart, purchase or
+add-to-favorite~\citep{tmall2015}. The Taobao UserBehavior dataset uses page
+views, carts, favorites and purchases~\citep{taobao2018}. PyTorch
+Geometric~\citep{fey2019pyg} ships it as a heterogeneous graph with typed
+user--item edges. Industrial graphs are larger, with the same shape.
+AliGraph describes a buyer--seller--commodity graph with hundreds of billions
+of nodes and edges~\citep{zhu2019aligraph}. Uber Eats builds user--dish and
+user--restaurant bipartite graphs whose edges are weighted by order counts and
+ratings~\citep{sarda2019ubereats}. LinkedIn's graph contains tens of node and
+edge types~\citep{borisyuk2024lignn}.
+
+\paragraph{Node-level features consumed downstream.}
+Two families dominate. The first is \emph{learned embeddings}. PinSage
+computes embeddings on a graph of 3 billion nodes and 18 billion
+edges~\citep{ying2018graph}. Taobao embeds items together with shop and brand
+side information~\citep{wang2018billion}. Uber Eats computes a vector for each
+user, restaurant and dish~\citep{sarda2019ubereats}. TwHIN embeddings serve as
+frozen features in ads ranking, follow recommendation, search ranking and
+content classification~\citep{elkishky2022twhin}. AliGraph states that the
+generated embeddings are fed as features into downstream
+tasks~\citep{zhu2019aligraph}. Airbnb converts listing embeddings into
+similarity features for its search ranker~\citep{grbovic2018real}. The second
+family is \emph{aggregates}. Uber's Michelangelo computes features such as a
+restaurant's average meal preparation time over the last seven days. It
+publishes them to a feature store that is shared across teams and recomputed
+daily~\citep{hermann2017michelangelo}.
+
+\paragraph{Implications for auditing.}
+Three consequences follow. First, one embedding table or aggregate feeds many
+downstream models, so a single filtering bug spreads widely. The feature
+boundary is therefore the natural place to audit, not each downstream model.
+Second, daily batch recomputation produces exactly the daily triples
+$(\Ein^t,\Eout^t,F^t)$ we assume. Third, real systems deviate from our model
+in three ways, and none of them breaks it:
+\begin{itemize}
+  \item Some systems treat the merchant as side information rather than a
+        node~\citep{wang2018billion}. Merchant features are then functions of
+        item features, and the audit applies unchanged.
+  \item Some learn from sessions rather than explicit
+        edges~\citep{grbovic2018real,wang2018billion}. Sessions are built from
+        the same interactions, so the sessions of opted-out customers belong to
+        $\Eout$.
+  \item Near-real-time features~\citep{hermann2017michelangelo} call for
+        triples at a finer time granularity. We leave this extension to future
+        work.
+\end{itemize}
 
 %=====================================================================
 \section{Problem Formulation}\label{sec:problem}
@@ -496,6 +584,11 @@ its result should be reported as a calibrated detection bound.
 Angrist, J.~D., and Pischke, J.-S. 2009.
 \newblock \emph{Mostly Harmless Econometrics}. Princeton University Press.
 
+\bibitem[Borisyuk et~al.(2024)]{borisyuk2024lignn}
+Borisyuk, F.; He, S.; Ouyang, Y.; Ramezani, M.; Du, P.; et~al. 2024.
+\newblock LiGNN: Graph neural networks at LinkedIn.
+\newblock In \emph{KDD}.
+
 \bibitem[Bourtoule et~al.(2021)]{bourtoule2021machine}
 Bourtoule, L.; Chandrasekaran, V.; Choquette-Choo, C.~A.; et~al. 2021.
 \newblock Machine unlearning.
@@ -516,10 +609,25 @@ Chernozhukov, V.; Chetverikov, D.; Demirer, M.; Duflo, E.; Hansen, C.; Newey, W.
 \newblock Double/debiased machine learning for treatment and structural parameters.
 \newblock \emph{The Econometrics Journal} 21(1).
 
+\bibitem[El-Kishky et~al.(2022)]{elkishky2022twhin}
+El-Kishky, A.; Markovich, T.; Park, S.; Verma, C.; Kim, B.; Eskander, R.; Malkov, Y.; Portman, F.; Samaniego, S.; Xiao, Y.; and Haghighi, A. 2022.
+\newblock TwHIN: Embedding the Twitter heterogeneous information network for personalized recommendation.
+\newblock In \emph{KDD}.
+
+\bibitem[Fey and Lenssen(2019)]{fey2019pyg}
+Fey, M., and Lenssen, J.~E. 2019.
+\newblock Fast graph representation learning with PyTorch Geometric.
+\newblock In \emph{ICLR Workshop on Representation Learning on Graphs and Manifolds}.
+
 \bibitem[Frasca et~al.(2020)]{frasca2020sign}
 Frasca, F.; Rossi, E.; Eynard, D.; Chamberlain, B.; Bronstein, M.; and Monti, F. 2020.
 \newblock SIGN: Scalable inception graph neural networks.
 \newblock \emph{arXiv:2004.11198}.
+
+\bibitem[Grbovic and Cheng(2018)]{grbovic2018real}
+Grbovic, M., and Cheng, H. 2018.
+\newblock Real-time personalization using embeddings for search ranking at Airbnb.
+\newblock In \emph{KDD}.
 
 \bibitem[Ginart et~al.(2019)]{ginart2019making}
 Ginart, A.; Guan, M.; Valiant, G.; and Zou, J. 2019.
@@ -536,6 +644,11 @@ Hamilton, W.; Ying, Z.; and Leskovec, J. 2017.
 \newblock Inductive representation learning on large graphs.
 \newblock In \emph{NeurIPS}.
 
+\bibitem[Hermann and Del~Balso(2017)]{hermann2017michelangelo}
+Hermann, J., and Del~Balso, M. 2017.
+\newblock Meet Michelangelo: Uber's machine learning platform.
+\newblock Uber Engineering Blog. \url{https://www.uber.com/blog/michelangelo-machine-learning-platform/}.
+
 \bibitem[He et~al.(2021)]{he2021stealing}
 He, X.; Jia, J.; Backes, M.; Gong, N.~Z.; and Zhang, Y. 2021.
 \newblock Stealing links from graph neural networks.
@@ -551,6 +664,11 @@ Jagielski, M.; Ullman, J.; and Oprea, A. 2020.
 \newblock Auditing differentially private machine learning: How private is private SGD?
 \newblock In \emph{NeurIPS}.
 
+\bibitem[Koch(2018)]{koch2018doordash}
+Koch, M. 2018.
+\newblock Personalized store feed with vector embeddings.
+\newblock DoorDash Engineering Blog.
+
 \bibitem[Nasr et~al.(2021)]{nasr2021adversary}
 Nasr, M.; Song, S.; Thakurta, A.; Papernot, N.; and Carlini, N. 2021.
 \newblock Adversary instantiation: Lower bounds for differentially private machine learning.
@@ -565,6 +683,11 @@ Olatunji, I.~E.; Nejdl, W.; and Khosla, M. 2021.
 Ramdas, A.; Gr{\"u}nwald, P.; Vovk, V.; and Shafer, G. 2023.
 \newblock Game-theoretic statistics and safe anytime-valid inference.
 \newblock \emph{Statistical Science} 38(4).
+
+\bibitem[Sarda et~al.(2019)]{sarda2019ubereats}
+Sarda, A.; Jain, A.; Liu, I.; et~al. 2019.
+\newblock Food discovery with Uber Eats: Using graph learning to power recommendations.
+\newblock Uber Engineering Blog. \url{https://www.uber.com/blog/uber-eats-graph-learning/}.
 
 \bibitem[Sch{\"o}nemann(1966)]{schonemann1966procrustes}
 Sch{\"o}nemann, P.~H. 1966.
@@ -591,10 +714,35 @@ Steinke, T.; Nasr, M.; and Jagielski, M. 2023.
 \newblock Privacy auditing with one (1) training run.
 \newblock In \emph{NeurIPS}.
 
+\bibitem[Tianchi(2015)]{tmall2015}
+Alibaba Tianchi. 2015.
+\newblock Repeat buyers prediction after sales promotion (IJCAI-15 competition dataset).
+\newblock \url{https://tianchi.aliyun.com/}.
+
+\bibitem[Tianchi(2018)]{taobao2018}
+Alibaba Tianchi. 2018.
+\newblock User behavior data from Taobao for recommendation.
+\newblock \url{https://tianchi.aliyun.com/dataset/649}.
+
 \bibitem[Vovk and Wang(2021)]{vovk2021evalues}
 Vovk, V., and Wang, R. 2021.
 \newblock E-values: Calibration, combination and applications.
 \newblock \emph{The Annals of Statistics} 49(3).
+
+\bibitem[Wang et~al.(2018)]{wang2018billion}
+Wang, J.; Huang, P.; Zhao, H.; Zhang, Z.; Zhao, B.; and Lee, D.~L. 2018.
+\newblock Billion-scale commodity embedding for e-commerce recommendation in Alibaba.
+\newblock In \emph{KDD}.
+
+\bibitem[Ying et~al.(2018)]{ying2018graph}
+Ying, R.; He, R.; Chen, K.; Eksombatchai, P.; Hamilton, W.~L.; and Leskovec, J. 2018.
+\newblock Graph convolutional neural networks for web-scale recommender systems.
+\newblock In \emph{KDD}.
+
+\bibitem[Zhu et~al.(2019)]{zhu2019aligraph}
+Zhu, R.; Zhao, K.; Yang, H.; Lin, W.; Zhou, C.; Ai, B.; Li, Y.; and Zhou, J. 2019.
+\newblock AliGraph: A comprehensive graph neural network platform.
+\newblock \emph{PVLDB} 12(12).
 
 \end{thebibliography}
 
