@@ -13,6 +13,7 @@
 \usepackage[round]{natbib}
 \usepackage{xcolor}
 \usepackage{tikz}
+\usetikzlibrary{arrows.meta,decorations.pathreplacing,fit,backgrounds}
 \usepackage[hidelinks]{hyperref}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
@@ -508,7 +509,9 @@ tests rely on exactly this: in Figure~\ref{fig:running}, the Tea scoop's
 feature is $\varphi(\emptyset, x_{\text{scoop}}, \Theta^t, \xi^t_{\text{scoop}})$,
 the same function applied to a never-bought item. The assumption rules out no
 leakage mode. It only says where, under $H_0$, information may come from.
-Table~\ref{tab:tests} summarizes the tests.
+Table~\ref{tab:tests} summarizes the tests. Each test ends with a short
+paragraph, \emph{Avoiding the pitfalls}, that explains how its design escapes
+the naive-test failures of Section~\ref{sec:challenges}.
 
 \begin{table}[t]
 \centering\small
@@ -557,16 +560,22 @@ If the Tea scoop's count is 1, or its embedding sits next to the Grinder
 (Bob's other purchase), then Bob's edges leaked.
 
 \paragraph{Implementation.}
-We compare canaries with cold items using a permutation test on a statistic
-that rotations do not change (C3), here the feature norm. Canaries may be
-intrinsically more attractive than cold items, which is why someone bought
-them (C1), so the comparison should match or adjust on $x_i$. For customers,
-the default output is deterministic in our pipelines, so an exact check
-applies: any opted-out customer whose feature differs from the default is a
-violation. T1 is the most robust passive test. Canaries and cold items have
-the same, empty, opted-in input, so behavioral correlation (C1) and
-receptive-field changes (C4) cannot cause false alarms. Long-tailed catalogs
-supply dozens of new canaries every day: 34 per day in our simulation.
+We compare canaries with cold items using a permutation test on the feature
+norm, matching or adjusting on $x_i$. For customers, the default output is
+deterministic in our pipelines, so an exact check applies: any opted-out
+customer whose feature differs from the default is a violation. Long-tailed
+catalogs supply dozens of new canaries every day: 34 per day in our
+simulation.
+
+\paragraph{Avoiding the pitfalls.}
+T1 is the most robust passive test, because canaries and cold items receive
+the same, empty, opted-in input. Correlated behavior (C1) therefore cannot make
+them differ, and neither can changes elsewhere in the graph (C4), which reach
+both groups only through the same global state. One residual form of C1
+remains: someone \emph{chose} to buy the Tea scoop, so canaries may be
+intrinsically more attractive than cold items. This is why we match on $x_i$.
+Finally, the feature norm is unchanged by rotations of the embedding space
+(C3), so no alignment is needed.
 
 \subsection{T2: Zero-difference on invariant neighborhoods}
 T2 compares how much features move overnight for two groups of items whose
@@ -596,7 +605,7 @@ $\{(\text{Bob},\text{buy}), (\text{Bob},\text{review})\}$.
 \paragraph{The test.}
 Select items whose receptive field is identical on days $t$ and $t{+}1$. Under
 $H_0$, the features of these items can still move, but only because $\Theta$ was
-retrained and because of noise (C2). Those causes affect all selected items
+retrained and because of noise. Those causes affect all selected items
 alike. Split the selected items into two groups. \emph{Treated} items have a
 changed opted-out neighborhood, and \emph{control} items do not. A compliant
 pipeline never reads the opted-out edges, so treated items should move no
@@ -605,7 +614,7 @@ Espresso machine on Tuesday and nothing in its receptive field changes, the
 Espresso machine is treated. If its embedding moves noticeably more than those
 of comparable control items, Bob's review leaked.
 
-To implement the test, we align the two days' embeddings (C3), compute each
+To implement the test, we align the two days' embeddings, compute each
 item's relative change $\|\Delta F_i\|/\|F_i\|$, and regress its logarithm on
 the treatment indicator and log degree. We then test whether the treatment
 coefficient is positive. For a deterministic 1-hop aggregate, no regression
@@ -615,6 +624,27 @@ because those are the ones a leak affects most. Opted-out changes farther away
 may also move control items under a leak. That dilutes the contrast and costs
 power, but it cannot cause false alarms.
 
+\paragraph{No expected value is needed.}
+T2 never predicts what a feature \emph{should} be, so it needs no access to the
+pipeline. It only compares how much two groups of items move under identical
+conditions. The one structural fact it uses is Assumption~\ref{ass:local}: a
+compliant pipeline cannot let anything outside the receptive field affect an
+item, except through the global state shared by all items. The exact check for
+aggregates needs no formula either. If a feature column is a deterministic
+1-hop function, it must stay bit-for-bit identical for every item whose typed
+1-hop opted-in edges are unchanged. The auditor can verify this property from
+the data itself: on control items, whose opted-in and opted-out edges are both
+unchanged, such a column never changes, whether or not the pipeline leaks.
+Once a column has shown this behavior, any change in a treated item is a
+violation.
+
+\paragraph{Avoiding the pitfalls.}
+The control group measures the noise floor, so random retraining (C2) moves
+both groups alike. Embeddings are aligned before comparison (C3). Invariance is
+checked over the full receptive field, not just direct neighbors (C4), and on
+typed edges (C5). Finally, treated and control items have identical opted-in
+inputs on both days, so correlated behavior (C1) cannot separate them.
+
 \subsection{T3: Status-switch difference-in-differences}
 T3 checks that a customer's contribution disappears, or appears, on the day
 their status changes.
@@ -622,8 +652,8 @@ their status changes.
 \paragraph{Status switch.}
 A customer \emph{switches} when their opt-out status changes between days $t$ and
 $t{+}1$. In Figure~\ref{fig:running}, Dan opts out on Tuesday. Under a
-retroactive policy (C6), all of Dan's edges move from $\Ein$ to $\Eout$ on that
-day.
+retroactive policy (the choice discussed in C6), all of Dan's edges move from
+$\Ein$ to $\Eout$ on that day.
 
 \paragraph{Expected change.}
 For aggregates, the auditor can compute the expected change from the edge
@@ -677,11 +707,86 @@ $S^{\mathrm{out}}$ exactly.
 We use ridge regression with 5-fold cross-fitting, in the spirit of double
 machine learning~\citep{chernozhukov2018double}. We compute the per-item
 difference in held-out squared error between the two models and apply a
-one-sided $t$-test. The test is valid only if $Z$ is rich enough to absorb the
-dependence between $\Ein$ and $\Eout$ (C1). If $F$ encodes opted-in information
-that $Z$ misses, false alarms are possible. In our experiments the test is
-conservative. It suits aggregates best. Against representation leakage it is
-weak, because a count of opted-out edges discards \emph{which} edges leaked.
+one-sided $t$-test. It suits aggregates best. Against representation leakage
+it is weak, because a count of opted-out edges discards \emph{which} edges
+leaked.
+
+\paragraph{Avoiding the pitfalls.}
+The surrogate $Z$ is what protects T4 against correlated behavior (C1). Model A
+already uses everything $Z$ knows about $\Ein$, so model B can only win with
+information that $Z$ lacks. The protection is only as good as $Z$. If $F$
+encodes opted-in information that $Z$ misses, false alarms are possible. In our
+experiments the test is conservative. Both models predict a per-item target
+from a single day's features, so randomness (C2) and rotations (C3) act as
+noise, not bias.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  every node/.style={font=\scriptsize},
+  cust/.style={draw, circle, minimum size=6.5mm, inner sep=0pt, fill=white},
+  optout/.style={cust, fill=gray!25, dashed},
+  item/.style={draw, rounded corners=2pt, minimum width=13mm, minimum height=4.6mm, fill=white},
+  ein/.style={thick},
+  eout/.style={thick, dashed, red!70!black},
+  fresh/.style={thick, blue!60!black},
+  panel/.style={draw, gray!60, rounded corners=3pt, inner sep=5pt},
+  ttl/.style={font=\footnotesize\bfseries, anchor=south west}
+]
+% ---- Panel A: Monday interactions
+\node[cust]   (A)  at (0,1.6) {Alice};
+\node[optout] (B)  at (0,0.4) {Bob};
+\node[item]   (E)  at (2.0,2.0) {Espresso};
+\node[item]   (G)  at (2.0,1.0) {Grinder};
+\node[item]   (S)  at (2.0,0.0) {Tea scoop};
+\draw[ein]  (A) -- (E); \draw[ein] (A) -- (G);
+\draw[eout] (B) -- (G); \draw[eout] (B) -- (S);
+\draw[orange!80!black, very thick, decorate, decoration={brace, amplitude=4pt}] (2.85,1.15) -- (2.85,-0.15)
+  node[midway, right=5pt, align=left, text=orange!60!black] (RL) {real pair:\\linked only\\by Bob};
+\begin{scope}[on background layer]
+\node[panel, fit=(A)(B)(E)(S)(G)(RL)] (PA) {};
+\end{scope}
+\node[ttl] at (PA.north west) {Monday (day $t$): interactions};
+
+% ---- Panel B: pipeline + features
+\node[draw, fill=gray!8, minimum width=2.2cm, minimum height=7mm, align=center] (P) at (6.6,1.65) {pipeline runs\\Monday night};
+\node[draw, minimum width=3.0cm, minimum height=1.55cm] (FB) at (6.6,0.15) {};
+\node[font=\tiny, anchor=north west] at (FB.north west) {features $F^{t}$};
+\fill (6.05,-0.05) circle (1.3pt) node[left, font=\tiny] {Grinder};
+\fill (6.35,0.25) circle (1.3pt) node[above, font=\tiny] {Tea scoop};
+\fill (7.05,-0.25) circle (1.3pt) node[below, font=\tiny] {Teapot};
+\fill (7.25,0.15) circle (1.3pt) node[above, font=\tiny] {Tea tin};
+\draw[-{Stealth}, thick] (P) -- (FB);
+\draw[-{Stealth}, thick] (PA.east |- P) -- (P.west);
+
+% ---- Panel C: Tuesday fresh interactions
+\node[cust] (C)  at (10.2,1.0) {Carol};
+\node[item] (TP) at (12.0,1.6) {Teapot};
+\node[item] (TT) at (12.0,0.4) {Tea tin};
+\coordinate (Ctop) at (10.2,2.23); \coordinate (Cbot) at (10.2,-0.23);
+\draw[fresh] (C) -- node[above, sloped, font=\tiny]{new} (TP);
+\draw[fresh] (C) -- node[below, sloped, font=\tiny]{new} (TT);
+\draw[orange!80!black, very thick, decorate, decoration={brace, amplitude=4pt}] (12.85,1.75) -- (12.85,0.25)
+  node[midway, right=5pt, align=left, text=orange!60!black] (PL) {placebo pair:\\linked only by\\Tuesday's new\\purchases};
+\begin{scope}[on background layer]
+\node[panel, fit=(C)(TP)(TT)(PL)(Ctop)(Cbot)] (PC) {};
+\end{scope}
+\node[ttl] at (PC.north west) {Tuesday (day $t{+}1$): fresh interactions};
+
+% ---- comparison
+\node[draw, rounded corners=3pt, fill=orange!6, align=left, text width=15.2cm, anchor=north] (CMP) at (7.0,-1.15)
+{\textbf{Compare in Monday's features $F^{t}$:} \ similarity(Grinder, Tea scoop) \ vs.\ similarity(Teapot, Tea tin), over many such pairs.\\
+\textbf{Compliant pipeline:} neither link was available, since Bob's edges were excluded and Tuesday had not happened yet $\Rightarrow$ both groups look alike.\\
+\textbf{Leaking pipeline:} Bob's link was available but Tuesday's was not $\Rightarrow$ real pairs are \emph{closer} than placebo pairs.};
+
+% ---- time axis
+\draw[-{Stealth}, thick, gray] (-0.4,-2.75) -- (14.6,-2.75) node[right, text=gray] {time};
+\foreach \x/\l in {1.9/Monday, 6.6/Monday night, 12.1/Tuesday}
+  \draw[gray, thick] (\x,-2.65) -- (\x,-2.85) node[below, text=gray] {\l};
+\end{tikzpicture}
+\caption{The temporal placebo of T5. Real pairs are linked only through opted-out customers on day $t$. Placebo pairs are linked only through interactions that first appear on day $t{+}1$, after day $t$'s features were computed. Both kinds of pair arise from the same shopping behavior, so they share any taste-driven similarity. Only the real pairs could have leaked.}
+\label{fig:t5}
+\end{figure*}
 
 \subsection{T5: Co-occurrence membership inference with a temporal placebo}
 T5 targets representation leakage. Training on Bob's basket pulls together
@@ -703,8 +808,9 @@ leak. Let $\mathcal{Q}^t$ contain the pairs that co-occur only through interacti
 that first appear on day $t{+}1$, which the day-$t$ pipeline could not have seen.
 For example, if Carol buys a teapot and a tea tin together on Tuesday, then
 (teapot, tea tin) is a placebo pair for Monday. Placebo pairs come from the
-same behavior that produces real pairs, so they share the C1 confounding, but
-they cannot have leaked into Monday's features.
+same behavior that produces real pairs, so they share the taste-driven
+similarity that broke the naive test, but they cannot have leaked into
+Monday's features. Figure~\ref{fig:t5} shows the timeline.
 
 \paragraph{The test.}
 Compare the cosine similarity of real and placebo pairs in $F^t$. Under $H_0$ the
@@ -720,6 +826,11 @@ therefore dependent, which makes standard errors too small. We subsample pairs
 so that no item appears twice. We then regress similarity on group membership
 and the two items' log degrees, and test the group coefficient.
 Section~\ref{sec:exp} shows that both details are necessary.
+
+\paragraph{Avoiding the pitfalls.}
+The placebo absorbs correlated behavior (C1). Both groups are scored with
+the same day's features, so randomness (C2) affects them alike. Cosine
+similarity within one embedding space is unchanged by rotations (C3).
 
 \subsection{T6: Active canaries as a reference test}
 T1--T5 are \emph{passive}: they use only data the platform produces anyway. If
@@ -739,9 +850,14 @@ buy four never-touched items, chosen by a coin flip only the auditor knows.
 Under $H_0$, the pipeline never reads the canaries' edges. Treated and control
 items are then exchangeable \emph{by construction}, and a permutation test over
 the random split is exact. It needs no assumption about how the pipeline works
-or how real users behave: there is no C1, and no locality assumption. We add
-the exact customer-level check from T1: the canary accounts' own features must
-equal the default.
+or how real users behave. We add the exact customer-level check from T1: the
+canary accounts' own features must equal the default.
+
+\paragraph{Avoiding the pitfalls.}
+None of the pitfalls of Section~\ref{sec:challenges} applies. Random assignment
+breaks any link between treatment and behavior (C1). Noise and rotations affect
+treated and control items alike (C2, C3). No locality assumption is needed
+(C4).
 
 \paragraph{Role as a baseline.}
 T6's validity is guaranteed and its power is set by the canary budget, so it
@@ -762,26 +878,80 @@ test.
 %=====================================================================
 \section{Sequential Evidence and Reporting}\label{sec:stats}
 %=====================================================================
-\paragraph{E-values.}
-Audits run continuously, so stopping at the first small p-value inflates the
-type-I error. We convert each daily p-value $p_t$ into an e-value with the
-calibrator $e_t=\kappa p_t^{\kappa-1}$ ($\kappa=1/2$)~\citep{vovk2021evalues}, and we track
-the e-process $M_T=\prod_{t\le T}e_t$. If each $e_t$ is valid conditional on the past,
-$M_T$ is a test supermartingale. Ville's inequality then gives
-$\Pr_{H_0}[\exists T: M_T\ge 1/\alpha]\le\alpha$, so the auditor may monitor indefinitely and
-stop at any time~\citep{shafer2011test,ramdas2023game}. Daily graphs share
-customers, so conditional validity is an assumption. Sample splitting by
-customer across days, or using only fresh canaries each day, makes it more
-plausible. Several tests are combined by averaging their e-processes, which
-needs no multiplicity correction.
+The tests of Section~\ref{sec:tests} each produce one p-value per day. This
+section answers two practical questions. First, given an endless stream of
+daily p-values, when should the auditor raise an alarm? Second, when no alarm
+is raised, what should the audit report?
 
-\paragraph{Reporting bounds.}
-The auditor should report a detectable effect size, not ``no leakage.'' For a
-leakage family indexed by $\rho$ (for example, the fraction of opted-out edges
-used), one injects $\rho$-leakage into a \emph{surrogate} pipeline built on the
-observed data. One then calibrates each test's power curve and reports the
-smallest $\rho$ that would have been detected within $T$ days with probability
-$1-\beta$. With active canaries (T6), this calibration runs on the real pipeline.
+\paragraph{The problem with daily p-values.}
+The obvious rule is to raise an alarm on the first day with $p<0.05$. Each day,
+a compliant pipeline then triggers a false alarm with probability 5\%. Over a
+30-day audit with independent days, the chance of at least one false alarm is
+$1-0.95^{30}\approx 79\%$. A Bonferroni correction (alarm only if $p<0.05/30$)
+restores the error rate, but it fixes the audit length in advance and throws
+away evidence that accumulates over several days.
+
+\paragraph{E-values as bets.}
+E-values solve both problems~\citep{shafer2011test,vovk2021evalues,ramdas2023game}.
+Think of the auditor as betting against compliance, starting with \$1. Each day
+it converts the p-value into a multiplier $e_t=1/(2\sqrt{p_t})$ and multiplies
+its wealth: $M_T=\prod_{t\le T}e_t$. Under $H_0$ the p-value is uniform, and the
+expected multiplier is exactly 1, so the bet is fair and wealth does not grow
+on average. The auditor raises an alarm when wealth reaches $1/\alpha=20$. A
+fair game that starts at 1 reaches 20 with probability at most 1/20 (Ville's
+inequality). The false-alarm rate is therefore at most 5\% \emph{overall},
+however long the auditor monitors and whenever it stops. Under a leak, small
+p-values give large multipliers, and wealth grows quickly.
+
+Table~\ref{tab:evalue} gives a worked example. No single day is below the
+Bonferroni threshold $0.05/30\approx 0.0017$, yet moderate evidence on several
+days compounds into an alarm on day 5. Under compliance, p-values are
+typically large: $p=0.6$ gives $e=0.65$, and wealth shrinks. An exact test that
+observes a violation returns $p=0$, which raises an alarm at once.
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Day $t$ & 1 & 2 & 3 & 4 & 5 \\
+\midrule
+p-value $p_t$ & 0.40 & 0.03 & 0.20 & 0.01 & 0.02 \\
+multiplier $e_t=1/(2\sqrt{p_t})$ & 0.79 & 2.89 & 1.12 & 5.00 & 3.54 \\
+wealth $M_t$ & 0.79 & 2.28 & 2.55 & 12.8 & \textbf{45.1} \\
+\bottomrule
+\end{tabular}
+\caption{Accumulating daily evidence. The alarm threshold is 20, and it is crossed on day 5.}
+\label{tab:evalue}
+\end{table}
+
+\paragraph{Combining tests.}
+To run several tests at once, the auditor splits its \$1 equally across them
+and raises an alarm when the \emph{average} wealth reaches 20. An average of
+e-values is itself an e-value, so no multiplicity correction is needed. A test
+that has no power against a given pipeline simply loses its share.
+
+\paragraph{Caveat: dependence across days.}
+Ville's inequality requires each day's e-value to be valid given all earlier
+days. Daily graphs share customers, so this is an assumption rather than a
+guarantee. It becomes more plausible when each day's test uses fresh units,
+for example new canaries, or splits customers across days.
+
+\paragraph{What to report when there is no alarm.}
+Proposition~\ref{prop:imposs} rules out the claim ``no leakage.'' The audit
+should instead report a \emph{detection bound}: ``had the pipeline leaked a
+fraction $\rho$ of opted-out edges, an alarm would have been raised within $T$
+days with probability at least $1-\beta$.'' Computing this bound requires a
+version of the pipeline into which leaks can be injected. With write access,
+T6 provides it on the real pipeline. Without write access, the auditor builds
+a surrogate pipeline on the observed data and injects leaks there, as we do in
+Section~\ref{sec:exp}. Using those results as an illustration, a final report
+would read: \emph{``No leakage was detected. Leakage of 2\% or more of opted-out
+edges into aggregates would have been detected within one day. Leakage of 10\%
+or more into embeddings would have been detected within four days. Smaller
+leakage into embeddings cannot be ruled out.''} In our simulation, every audit
+with these leak rates raised an alarm within those horizons. A real report
+would use enough simulated audits to state the probability $1-\beta$ precisely.
 
 %=====================================================================
 \section{Experiments}\label{sec:exp}

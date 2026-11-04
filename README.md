@@ -14,6 +14,8 @@ The pages below are rendered from `main.pdf`. To refresh them after editing, run
 <img src="pages/page-08.png" width="100%" alt="Page 8">
 <img src="pages/page-09.png" width="100%" alt="Page 9">
 <img src="pages/page-10.png" width="100%" alt="Page 10">
+<img src="pages/page-11.png" width="100%" alt="Page 11">
+<img src="pages/page-12.png" width="100%" alt="Page 12">
 
 ---
 
