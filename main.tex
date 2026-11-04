@@ -28,6 +28,7 @@
 \newcommand{\Eall}{E_{\mathrm{all}}}
 \newcommand{\indep}{\perp\!\!\!\perp}
 \newcommand{\N}{\mathcal{N}}
+\newcommand{\edit}[1]{{EDIT: \color{red} #1}}
 
 \title{\Large\bfseries Trust, but Verify: Black-Box Auditing of Opt-Out Compliance\\ in Graph Feature Pipelines}
 \author{Anonymous Authors\\ \normalsize Submitted to the Workshop on Privacy-Preserving Artificial Intelligence (PPAI)}
@@ -82,7 +83,7 @@ feature and the features of every item and merchant reachable through their
 edges. Filtering bugs break this promise silently: a join that drops the
 consent predicate, a stale cache, or a training job that reads an
 unfiltered snapshot. Code review catches some of these bugs. In practice,
-though, a privacy team or external assessor often cannot inspect the pipeline.
+though, a privacy team or external assessor often cannot inspect the pipeline. \edit{It is actually because of speed. Traditional privacy review process often blocks the dev of new pipelines. It is also a security risk to centralize the access authority of company-wide data pipelines to a single privacy team. Maybe I miss something, try think harder about why in reality direct access to the pipeline might be limited. Another presumption is that we should not trust the analysis of pipeline or the result from lineage since it might miss something.} 
 It observes only what goes in and what comes out.
 
 We study that setting. Each day the auditor receives
