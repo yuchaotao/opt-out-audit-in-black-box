@@ -82,9 +82,34 @@ influence \emph{any} produced feature. That covers the customer's own
 feature and the features of every item and merchant reachable through their
 edges. Filtering bugs break this promise silently: a join that drops the
 consent predicate, a stale cache, or a training job that reads an
-unfiltered snapshot. Code review catches some of these bugs. In practice,
-though, a privacy team or external assessor often cannot inspect the pipeline. \edit{It is actually because of speed. Traditional privacy review process often blocks the dev of new pipelines. It is also a security risk to centralize the access authority of company-wide data pipelines to a single privacy team. Maybe I miss something, try think harder about why in reality direct access to the pipeline might be limited. Another presumption is that we should not trust the analysis of pipeline or the result from lineage since it might miss something.} 
-It observes only what goes in and what comes out.
+unfiltered snapshot.
+
+\paragraph{Why not inspect the pipeline?}
+In principle, a privacy team could review the code or rely on data-lineage
+metadata. In practice, both fall short.
+\emph{Velocity.} Gating every pipeline change on manual privacy review slows
+development. Organizations increasingly let teams ship and verify compliance
+continuously afterwards.
+\emph{Least privilege.} Giving one team read access to every pipeline and its
+data concentrates authority, which creates an insider risk and a security
+target. An auditor that sees only edge lists, consent labels and outputs
+needs far less access.
+\emph{Scale and ownership.} A large platform runs hundreds of feature
+pipelines in SQL, Spark and notebook code. Different teams own them and change
+them weekly. Some stages are vendor services or managed feature stores whose
+source is unavailable. External assessors face the same opacity for
+intellectual-property reasons.
+\emph{Code and lineage are not behavior.} Compliance depends on runtime state:
+which version of the consent table was joined, how fresh a cache was, whether
+a backfill ran, and which snapshot a training job read. Lineage systems
+usually track dependencies between tables or columns, not which rows passed a
+consent predicate. They also miss copies made outside instrumented tools. A
+code review, finally, judges code at one point in time, and that code keeps
+changing.
+
+We therefore verify compliance from observable behavior alone, independently
+of how the pipeline is implemented. This mirrors the separation of duties in
+financial auditing. The auditor observes only what goes in and what comes out.
 
 We study that setting. Each day the auditor receives
 $(\Ein^t, \Eout^t, F^t)$ from a fixed but opaque pipeline and must decide
