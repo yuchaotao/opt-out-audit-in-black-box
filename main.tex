@@ -624,20 +624,6 @@ because those are the ones a leak affects most. Opted-out changes farther away
 may also move control items under a leak. That dilutes the contrast and costs
 power, but it cannot cause false alarms.
 
-\paragraph{No expected value is needed.}
-T2 never predicts what a feature \emph{should} be, so it needs no access to the
-pipeline. It only compares how much two groups of items move under identical
-conditions. The one structural fact it uses is Assumption~\ref{ass:local}: a
-compliant pipeline cannot let anything outside the receptive field affect an
-item, except through the global state shared by all items. The exact check for
-aggregates needs no formula either. If a feature column is a deterministic
-1-hop function, it must stay bit-for-bit identical for every item whose typed
-1-hop opted-in edges are unchanged. The auditor can verify this property from
-the data itself: on control items, whose opted-in and opted-out edges are both
-unchanged, such a column never changes, whether or not the pipeline leaks.
-Once a column has shown this behavior, any change in a treated item is a
-violation.
-
 \paragraph{Avoiding the pitfalls.}
 The control group measures the noise floor, so random retraining (C2) moves
 both groups alike. Embeddings are aligned before comparison (C3). Invariance is
@@ -653,25 +639,57 @@ their status changes.
 A customer \emph{switches} when their opt-out status changes between days $t$ and
 $t{+}1$. In Figure~\ref{fig:running}, Dan opts out on Tuesday. Under a
 retroactive policy (the choice discussed in C6), all of Dan's edges move from
-$\Ein$ to $\Eout$ on that day.
+$\Ein$ to $\Eout$ on that day. Call the items Dan touched \emph{affected} items.
+Here, the Kettle is affected.
 
-\paragraph{Expected change.}
-For aggregates, the auditor can compute the expected change from the edge
-lists. The Kettle's purchase count must drop by exactly Dan's purchases, from
-2 to 1, on Tuesday. For embeddings there is no exact expectation. Instead, we
-compare items the switcher touched (\emph{affected}) with matched items of
-similar degree that no switcher touched (\emph{unaffected}), in a
-difference-in-differences design~\citep{angrist2009mostly}.
+\paragraph{The reference change, without a formula.}
+The auditor cannot compute how the Kettle's feature \emph{should} change,
+because it does not know the pipeline. A compliant pipeline, however, sees
+Dan's switch exactly as if Dan had deleted his interactions: one opted-in
+purchase disappears from the Kettle. Items lose opted-in edges for ordinary
+reasons every day, for instance when a customer's basket changes. These
+\emph{natural removals} show, empirically, how the pipeline responds to losing
+an edge of a given type. For each affected item, we therefore select
+\emph{comparison} items that lost the same number and types of opted-in edges
+that day for ordinary reasons, matched on degree. Suppose the Toaster lost one
+purchase on Tuesday because its buyer's basket changed. A compliant pipeline
+must treat the Kettle and the Toaster alike: whatever happens to the Toaster's
+purchase count and embedding on Tuesday should also happen to the Kettle's.
+Switches back to opt-in work the same way, with \emph{natural additions} as the
+reference: when Bob opts back in, his items should respond like items that
+gained the same opted-in edges for ordinary reasons. With many days of data,
+the auditor can go further and fit a model of the pipeline's response,
+$\Delta F_i$ as a function of the change in item $i$'s typed opted-in edge counts,
+on items that no switch affected, and use it to predict the affected items'
+change.
 
 \paragraph{The test.}
-For aggregates, any mismatch between observed and expected change on the
-switch day is a violation. For embeddings, compliance predicts that affected
-items change on the switch day and then settle. A stale cache or delayed
-deletion predicts a different timing: affected items keep showing excess
-change on later days relative to unaffected items. Switches back to opt-in
-are also informative. If Bob opts back in on Thursday, his edges legitimately
-join $\Ein$ on Thursday. If his items already carried his signal on Wednesday,
-before the switch, that is leakage.
+We compare affected and comparison items in a difference-in-differences
+design~\citep{angrist2009mostly}, using the change from $t$ to $t{+}1$ and on the
+following days. Compliance predicts that affected items respond on the switch
+day exactly as comparison items do, and that neither group shows further
+change afterwards. Two bugs produce different patterns:
+\begin{itemize}
+  \item \emph{Stale cache or delayed deletion.} On Tuesday, the Toaster's count
+        drops but the Kettle's does not, because the pipeline still uses Dan's
+        purchase. The Kettle catches up only on Thursday. Affected items
+        respond \emph{less} than comparison items on the switch day, and
+        \emph{more} on later days.
+  \item \emph{Opted-out data used before an opt-in.} Bob opts back in on
+        Thursday, so his edges legitimately join $\Ein$ on Thursday. If his items
+        already carried his signal on Wednesday, they respond \emph{less} than
+        comparison items on Thursday, because there is nothing left to add.
+\end{itemize}
+For deterministic columns, such as counts, the comparison items also reveal
+how the column responds to one removed edge. If every comparison item's count
+drops by one, a single affected item whose count does not drop is a
+violation.
+
+\paragraph{Avoiding the pitfalls.}
+Comparison items have the same kind of opted-in change on the same day, so
+correlated behavior (C1) and retraining noise (C2) affect both groups alike.
+Embeddings are aligned before comparison (C3). Edge changes are matched on type
+(C5), and the opt-out policy is fixed in advance (C6).
 
 \paragraph{What it adds.}
 T3 targets how status changes propagate through the pipeline: stale consent
