@@ -482,15 +482,33 @@ We make one structural assumption, stated for item features; customer and
 merchant features are analogous.
 
 \begin{assumption}[Locality given global state]\label{ass:local}
-Under $H_0$, $F_v^t=\varphi\big(\N_k^{\mathrm{in}}(v), x_v, \Theta^t, \xi_v^t\big)$, where
-$\N_k^{\mathrm{in}}(v)$ is the typed $k$-hop neighborhood of $v$ in $\Ein^t$, and
-$\Theta^t=\theta(\Ein^t,\xi^t)$ is a global state such as trained parameters.
+There exist a radius $k\ge 1$ and two fixed functions $\theta$ and $\varphi$,
+both unknown to the auditor, such that under $H_0$, for every node $v$ and day
+$t$,
+\begin{equation}
+  F_v^t=\varphi\big(\N_k^{\mathrm{in}}(v),\, x_v,\, \Theta^t,\, \xi_v^t\big),
+  \qquad \Theta^t=\theta(\Ein^t,\xi^t).
+  \label{eq:local}
+\end{equation}
+Here $\N_k^{\mathrm{in}}(v)$ is the typed $k$-hop neighborhood of $v$ in $\Ein^t$,
+$\Theta^t$ is a global state such as trained parameters, and $\xi_v^t$ is the
+part of the pipeline's randomness $\xi^t$ that acts on node $v$.
 \end{assumption}
 
-Assumption~\ref{ass:local} holds for message-passing GNNs, feature propagation
-and aggregation layers, with $\Theta$ absorbing anything trained globally. It
-rules out no leakage mode. It only says where, under $H_0$, information may
-come from. Table~\ref{tab:tests} summarizes the tests.
+Assumption~\ref{ass:local} refines the compliant pipeline $f_0$ in
+\eqref{eq:h0} by splitting it into two stages. The \emph{training} stage
+$\theta$ may look at all of $\Ein^t$ and produces global state $\Theta^t$. The
+\emph{readout} stage $\varphi$ computes each node's feature from that state and
+the node's own $k$-hop opted-in neighborhood. For a two-layer GraphSAGE model,
+for example, $\theta$ is the training run, $\Theta^t$ are the learned weights,
+$\varphi$ is the forward pass, and $k=2$. For a purchase count, $\Theta^t$ is
+empty, $\varphi$ counts typed edges, and $k=1$. Since the pipeline is fixed,
+$\theta$ and $\varphi$ are the same functions every day and for every node. The
+tests rely on exactly this: in Figure~\ref{fig:running}, the Tea scoop's
+feature is $\varphi(\emptyset, x_{\text{scoop}}, \Theta^t, \xi^t_{\text{scoop}})$,
+the same function applied to a never-bought item. The assumption rules out no
+leakage mode. It only says where, under $H_0$, information may come from.
+Table~\ref{tab:tests} summarizes the tests.
 
 \begin{table}[t]
 \centering\small
