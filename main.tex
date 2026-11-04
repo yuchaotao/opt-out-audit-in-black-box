@@ -30,6 +30,7 @@
 \newcommand{\Eall}{E_{\mathrm{all}}}
 \newcommand{\indep}{\perp\!\!\!\perp}
 \newcommand{\N}{\mathcal{N}}
+\newcommand{\cpart}[1]{\par\noindent\textit{#1}\ }
 \newcommand{\edit}[1]{{\color{red}(EDIT: #1 )}}
 
 \title{\Large\bfseries Trust, but Verify: Black-Box Auditing of Opt-Out Compliance\\ in Graph Feature Pipelines}
@@ -356,83 +357,123 @@ $1-\beta$; none was.''
 %=====================================================================
 \section{Why Naive Tests Fail}\label{sec:challenges}
 %=====================================================================
-The obvious audit compares features with what the auditor expects and flags
-any surprise. Each challenge below makes that naive comparison raise false
-alarms, or miss real leaks. We illustrate each one with
-Figure~\ref{fig:running}. Table~\ref{tab:challenges} summarizes them, together
-with the safeguard each test in Section~\ref{sec:tests} uses.
+Each challenge below starts from a natural \emph{naive test} that an auditor
+might write first. For each one, we give a positive example where the test
+works, catching a real leak in Figure~\ref{fig:running}. We then give a
+counterexample where the same test raises a false alarm on a compliant
+pipeline, and say what fixes it. Table~\ref{tab:challenges} summarizes the six
+challenges.
 
 \begin{table}[t]
 \centering\footnotesize
 \setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}lll@{}}
 \toprule
-Challenge & Naive test that breaks & Safeguard \\
+Challenge & Naive test & Fix \\
 \midrule
-C1 correlation & ``$F$ predicts $\Eout$'' & controls, placebo \\
-C2 stochasticity & ``$F$ changed'' & noise-floor control group \\
-C3 rotation & coordinate differences & alignment, invariants \\
+C1 correlation & opted-out pairs close & $\Ein$ controls, placebo \\
+C2 stochasticity & feature changed & noise-floor control group \\
+C3 rotation & coordinates changed & alignment, invariants \\
 C4 receptive field & 1-hop invariance & $k$-hop invariance \\
 C5 edge identity & untyped invariance & typed edges \\
-C6 opt-out scope & --- & fix definition first \\
+C6 opt-out scope & current status on history & fix policy first \\
 \bottomrule
 \end{tabular}
-\caption{Why naive tests fail, and the safeguard each test uses.}
+\caption{Six naive tests, the challenge that breaks each one, and the fix used in Section~\ref{sec:tests}.}
 \label{tab:challenges}
 \end{table}
 
 \textbf{C1: Opted-in and opted-out behavior are correlated.}
-Bob opted out, but his tastes are not unusual. Alice also likes coffee. She
-bought the Espresso machine and viewed the Grinder. A compliant pipeline
-therefore places the Espresso machine and the Grinder close together, using
-Alice's edges alone. Bob also bought both. So the naive test ``items Bob
-co-bought are close in feature space'' fires even though Bob's edges were never
-used. In general, popular items are popular in both groups, and similar
-customers buy similar items whatever their consent status. Any test must ask
-whether $F$ predicts $\Eout$ \emph{beyond what $\Ein$ already explains}.
+\cpart{Naive test.} Take every pair of items co-purchased by an opted-out
+customer. Check whether these pairs are closer in feature space than random
+item pairs. If so, conclude that opted-out baskets shaped the features.
+\cpart{When it works.} Suppose the pipeline trains its embeddings on all edges,
+including Bob's. Bob is the only link between the Grinder and the Tea scoop, so
+training pulls them together. The test finds them unusually close and
+correctly flags the leak.
+\cpart{When it fails.} Now take a compliant pipeline. Alice bought the Espresso
+machine and viewed the Grinder, so the pipeline places these two items close
+together using her edges alone. Bob also bought both, so the pair counts as
+an opted-out co-purchase, and the test fires anyway. The underlying problem is
+that Bob's tastes are not unusual. Popular items are popular in both groups, and
+similar customers buy similar items whatever their consent status.
+\cpart{Fix.} Ask whether $F$ predicts $\Eout$ \emph{beyond what $\Ein$ already
+explains}, using controls computed from $\Ein$ (T4) or a placebo that shares
+the same confounding (T5).
 
 \textbf{C2: The pipeline is random.}
-Run Monday's pipeline twice on exactly the same input, and the Grinder's
-embedding comes out slightly different each time, because of random
-initialization, sampled negatives and approximate solvers. So the naive test
-``the Grinder's feature changed after Bob's edges changed'' proves nothing by
-itself. The auditor needs a control group of items whose inputs did not change,
-in order to measure how much features move for no reason.
+\cpart{Naive test.} Find items whose opted-out edges changed overnight. If any
+such item's feature also changed, conclude that the pipeline reads opted-out
+edges.
+\cpart{When it works.} Suppose the pipeline is deterministic and its review
+count wrongly includes opted-out reviews. Bob reviews the Espresso machine on
+Tuesday, and its review count goes from 0 to 1. The test sees the change and
+correctly flags the leak.
+\cpart{When it fails.} Now take a compliant pipeline that retrains its
+embeddings daily from a fresh random initialization. Even run twice on the same
+input, it gives every item a slightly different embedding, the Espresso machine
+included. The test fires on noise.
+\cpart{Fix.} Compare against a control group of items whose inputs did not
+change, which measures how much features move for no reason (T2).
 
 \textbf{C3: Embeddings have no fixed coordinates.}
-Suppose Tuesday's retraining produces exactly the same geometry as Monday's,
-but rotated. Every item's coordinates change, while all distances and angles
-stay the same. A naive coordinate-by-coordinate comparison would report that
-every item changed. Day-over-day comparisons must first align the two
-embedding spaces, e.g., with orthogonal
-Procrustes~\citep{schonemann1966procrustes}, or use quantities that rotations
-do not change, such as norms and cosine similarities.
+\cpart{Naive test.} For items whose inputs did not change, compare yesterday's
+and today's embeddings coordinate by coordinate, and flag large differences.
+\cpart{When it works.} Suppose retraining is warm-started from yesterday's
+parameters, so the coordinates are stable from day to day. A leak then shows
+up as a localized coordinate shift near Bob's items, and the test finds it.
+\cpart{When it fails.} Now suppose Tuesday's retraining produces exactly
+Monday's geometry, but rotated. All distances and angles are unchanged, yet
+every coordinate of every item differs. The test flags the entire catalog.
+\cpart{Fix.} Align the two spaces first, e.g., with orthogonal
+Procrustes~\citep{schonemann1966procrustes}, or compare only quantities that
+rotations preserve, such as norms and cosine similarities.
 
 \textbf{C4: Features depend on more than immediate neighbors.}
-Suppose the pipeline uses a two-layer GNN. The Grinder's embedding then depends
-on its buyers, and also on everything \emph{those} buyers bought. On Tuesday,
-Carol buys a new teapot. The Grinder's own buyers are unchanged, yet its
-embedding legitimately moves, because Carol's basket changed. A test that only
-checks whether an item's direct neighbors changed would blame this movement on
-Bob. Invariance must be checked over the pipeline's true receptive field,
-which the auditor may have to estimate. A component fit on the whole graph,
-such as a matrix factorization, has an unbounded receptive field.
+\cpart{Naive test.} Restrict attention to items whose opted-in \emph{direct}
+neighbors are unchanged. Their features should then be unchanged, or move only
+by noise. If they move more when an opted-out edge changes, conclude leakage.
+\cpart{When it works.} For a 1-hop aggregate such as a purchase count, the test
+is exact. The Grinder's opted-in buyers are unchanged, so its count must be
+unchanged. If Bob buys a second grinder and the count rises, that is a leak.
+\cpart{When it fails.} Now suppose the embeddings come from a two-layer GNN. The
+Grinder's embedding then depends on its buyers \emph{and on everything those
+buyers bought}. On Tuesday, Carol buys a new teapot. The Grinder's direct
+neighbors are unchanged, but its embedding legitimately moves, and the test
+blames Bob.
+\cpart{Fix.} Check invariance over the pipeline's true receptive field ($k$
+hops), which the auditor may have to estimate (T2). A component fit on the
+whole graph, such as a matrix factorization, has an unbounded receptive field.
 
 \textbf{C5: The same pair can change edge type.}
-On Monday, Alice viewed the Grinder. On Tuesday, she buys it. The set of
-customers touching the Grinder is unchanged, but its purchase count rises
-from 1 to 2, which is correct. A test that tracks only (customer, item) pairs
-would see ``no opted-in change, yet the feature changed'' and blame Bob.
-Invariance must be checked on \emph{typed} edges. Section~\ref{sec:exp} shows
-that ignoring this alone produces a 44\% false-positive rate.
+\cpart{Naive test.} Represent each item's opted-in neighborhood as the
+\emph{set of customers} who touched it. If that set is unchanged but a feature
+changed, conclude leakage.
+\cpart{When it works.} If the platform logs a single interaction type, such as
+purchases only, the customer set fully determines the opted-in input, and the
+test is sound.
+\cpart{When it fails.} With several types, the customer set is not enough. On
+Monday, Alice viewed the Grinder, and on Tuesday she buys it. The set of
+customers touching the Grinder is unchanged, but its purchase count correctly
+rises from 1 to 2. The test sees an unexplained change and blames Bob.
+\cpart{Fix.} Track \emph{typed} edges. Section~\ref{sec:exp} shows that this
+mistake alone produces a 44\% false-positive rate.
 
 \textbf{C6: The scope of an opt-out must be defined.}
+\cpart{Naive test.} Build the expected $\Ein$ by applying each customer's
+\emph{current} status to all of their history, then run any of the tests
+above.
+\cpart{When it works.} If the pipeline uses only the current day's
+interactions, history is irrelevant, and current status is the only sensible
+definition.
+\cpart{When it fails.} Suppose the pipeline computes 30-day purchase counts.
 Dan opts out on Tuesday. His Monday purchase of the Kettle happened while he
-was opted in. If the pipeline computes 30-day purchase counts, should Tuesday's
-count for the Kettle include it? A retroactive policy says no, and a
-prospective policy says yes. Both are defensible, but they define different
-sets $\Ein$. The auditor must fix the definition before testing, or the same
-pipeline can be judged both compliant and leaking.
+was opted in. A pipeline that follows a prospective policy keeps that
+purchase, which is a defensible choice. The naive test, which assumes a
+retroactive policy, flags it as a leak. The opposite assumption produces the
+opposite error.
+\cpart{Fix.} Agree on the opt-out policy before testing, and derive $\Ein$ from
+that definition.
 
 %=====================================================================
 \section{Audit Tests}\label{sec:tests}
