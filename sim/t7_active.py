@@ -1,4 +1,4 @@
-"""T6 active-canary reference test.
+"""T7 active-canary reference test.
 
 Adds C synthetic opted-out accounts. Each day a random set of 2*C*m items with no organic
 interactions that day is drawn and split uniformly at random into treated and control halves; canary account k
@@ -6,7 +6,7 @@ purchases treated items k*m..(k+1)*m-1. Under H0 the pipeline never reads these 
 so treated and control items are exchangeable and a label-permutation test is exact
 (its validity rests only on the auditor's own randomization).
 
-Usage: python3 t6_canary.py SEEDS OUT.json [null]
+Usage: python3 t7_active.py SEEDS OUT.json [null|sweep] [edge|user]
 """
 import json
 import sys
@@ -74,6 +74,7 @@ def t6_test(snap, F, rng):
 
 
 def run(seed, mode, rho, days=10):
+    a.LEAK_SALT = seed
     w = CanaryWorld(seed)
     rng = np.random.default_rng(seed + 5)
     ps = []
@@ -88,6 +89,8 @@ def run(seed, mode, rho, days=10):
 if __name__ == "__main__":
     seeds = [int(x) for x in sys.argv[1].split(",")]
     null = len(sys.argv) > 3 and sys.argv[3] == "null"
+    if len(sys.argv) > 4:
+        a.LEAK_PATTERN = sys.argv[4]
     configs = [("clean", 0.0)] if null else \
         [(m, r) for m in ["local", "global"] for r in [0.02, 0.05, 0.1, 0.25, 1.0]]
     out = []

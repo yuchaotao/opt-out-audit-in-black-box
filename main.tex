@@ -55,16 +55,18 @@ certify zero use: it can only detect leakage above a threshold and bound what
 remains. We identify the confounders that make naive tests unsound: the
 correlation between opted-in and opted-out behavior, pipeline stochasticity,
 rotational non-identifiability of embeddings and receptive-field mismatch.
-We then propose six tests that exploit the problem's structure: natural
-canaries, zero-difference tests on invariant neighborhoods, opt-out
+We then propose six passive tests that exploit the problem's structure:
+natural canaries, zero-difference tests on invariant neighborhoods, opt-out
 status-switch difference-in-differences, residual regression with surrogate
-controls, a membership-inference co-occurrence test with a temporal placebo,
-and active canaries. Evidence is combined across days with anytime-valid
+controls, and two membership-inference tests, one on item pairs with a
+temporal placebo and one on edges with a same-customer reference. An active
+canary test with randomized assignment serves as a reference. Evidence is combined across days with anytime-valid
 e-values. In a synthetic study, the calibrated tests keep per-day false-positive
-rates at or below 3\% and raise no false alarm in 30 ten-day audits of a clean
+rates at or below 4\% and raise no false alarm in 30 ten-day audits of a clean
 pipeline. They detect an aggregation bug that leaks 2\% of opted-out edges on
-day one. We also show how two seemingly reasonable test designs produce
-false-positive rates of 18--44\%.
+day one. Natural canaries make the passive audit as powerful as an active
+campaign with 80 canary edges a day. We also show how several seemingly
+reasonable test designs produce false-positive rates of 18--75\%.
 \end{abstract}
 
 %=====================================================================
@@ -127,8 +129,9 @@ whether $F^t$ was computed from $\Ein^t$ alone. Our contributions are:
         (Section~\ref{sec:problem}).
   \item A catalogue of confounders that invalidate naive tests
         (Section~\ref{sec:challenges}).
-  \item Six complementary audit tests that target aggregation leakage and
-        representation leakage (Section~\ref{sec:tests}).
+  \item Six complementary passive audit tests that target aggregation leakage
+        and representation leakage, and an active reference test
+        (Section~\ref{sec:tests}).
   \item A sequential framework that combines daily evidence with e-values and
         reports calibrated leakage bounds instead of an unfalsifiable claim of
         compliance (Section~\ref{sec:stats}).
@@ -525,10 +528,11 @@ T2 zero-diff & agg., repr. & churn & invariant $\N_k^{\mathrm{in}}$ \\
 T3 DiD & agg. & status switches & matched items \\
 T4 residual & agg. & --- & surrogate of $\Ein$ \\
 T5 co-occur. & repr. & --- & temporal placebo \\
-T6 active (ref.) & any & write access & random assignment \\
+T6 edge MI & repr. & basket churn & same-user fresh edges \\
+T7 active (ref.) & any & write access & random assignment \\
 \bottomrule
 \end{tabular}
-\caption{Audit tests, the leakage modes they target, what they require, and the control that makes them valid under $H_0$. T1--T5 are passive; T6 is the active reference.}
+\caption{Audit tests, the leakage modes they target, what they require, and the control that makes them valid under $H_0$. T1--T6 are passive; T7 is the active reference.}
 \label{tab:tests}
 \end{table}
 
@@ -850,10 +854,95 @@ The placebo absorbs correlated behavior (C1). Both groups are scored with
 the same day's features, so randomness (C2) affects them alike. Cosine
 similarity within one embedding space is unchanged by rotations (C3).
 
-\subsection{T6: Active canaries as a reference test}
-T1--T5 are \emph{passive}: they use only data the platform produces anyway. If
+\subsection{T6: Edge-level membership inference}
+T6 asks directly whether the pipeline \emph{remembers} individual opted-out edges.
+It applies the logic of membership inference: a trained model tends to score
+its training data higher than data it never
+saw~\citep{shokri2017membership,carlini2022first}.
+
+\paragraph{Scoring an edge.}
+For an edge $(u,i)$ on day $t$, the auditor builds a context vector for customer
+$u$ from $F$ alone: the mean embedding of $u$'s other items that day. The edge's
+score is the cosine similarity between item $i$'s embedding and this context.
+In Figure~\ref{fig:running}, Bob's edge to the Tea scoop is scored by
+comparing the Tea scoop's embedding with the mean embedding of the Espresso
+machine and the Grinder. The context is needed because a compliant pipeline
+gives Bob only the default customer feature (T1).
+
+\paragraph{Three groups of edges.}
+\begin{itemize}
+  \item \emph{Members} (IN): opted-in edges on day $t$. The pipeline legitimately
+        learns from them, so they score high if it memorizes edges.
+  \item \emph{Suspects} (OUT): opted-out edges on day $t$, such as Bob's three
+        purchases.
+  \item \emph{Guaranteed non-members} (FRESH): for opted-out customers whose
+        basket changes on day $t{+}1$, their day-$(t{+}1)$ basket, scored with
+        day-$t$ features. The day-$t$ pipeline cannot have seen these
+        interactions.
+\end{itemize}
+
+\paragraph{The test.}
+We compare OUT with FRESH, not with IN. Under $H_0$, both are non-members.
+They come from the same customers with the same tastes, so they score alike.
+Under a leak, OUT edges become members and score higher. For each opted-out
+customer with both kinds of edge, we compute the difference between the mean
+OUT score and the mean FRESH score. We then test whether these differences are
+positive across customers (one-sided $t$-test). Comparing OUT with IN directly
+would not work. How much higher members score than non-members depends on how
+much the pipeline memorizes. A pipeline that generalizes smoothly scores
+members and non-members alike even when it is compliant, so ``OUT looks like
+IN'' would not imply a leak. FRESH supplies the missing reference.
+
+\paragraph{An effect size.}
+IN provides a scale. Let INF be the next-day baskets of opted-in customers,
+scored the same way, and let $\bar s$ denote a group's mean score. Define
+\begin{equation}
+  \lambda=\frac{\bar s_{\mathrm{OUT}}-\bar s_{\mathrm{FRESH}}}{\bar s_{\mathrm{IN}}-\bar s_{\mathrm{INF}}}.
+\end{equation}
+$\lambda\approx 0$ under compliance, and $\lambda\approx 1$ when the pipeline treats all
+opted-out edges as training data. In between, $\lambda$ roughly estimates the
+fraction of opted-out edges that behave like members. The denominator doubles
+as a power diagnostic. If $\bar s_{\mathrm{IN}}\approx\bar s_{\mathrm{INF}}$, the pipeline does not
+memorize individual edges, T6 cannot detect anything, and the audit report
+should say so.
+
+\paragraph{Relation to T5.}
+T5 tests item pairs, and T6 tests edges, so the two are different tests. They
+are nested, though: an edge's score pools all the pairs that pass through
+customer $u$ and end at item $i$. The Tea scoop's score aggregates its pairs with
+the Espresso machine and with the Grinder. The references also differ. T5's
+placebo pairs come from anyone's fresh interactions, while T6's reference
+comes from the same customers, which also controls for who opts out. Both
+tests link two items only if two edges of the same customer leaked. They are
+therefore weak when individual edges leak at random, since both edges leak
+with probability $\rho^2$. They are strong when a bug leaks whole customers,
+for example through stale consent rows.
+
+\paragraph{Implementation.}
+Two details nearly broke calibration in our experiments. First, the reference
+must be the customer's \emph{whole} next-day basket, not only the new edges. New
+edges exclude items the customer already had, so they are biased away from
+the customer's strongest preferences, as with T5's placebo. Second, both
+groups' contexts must have the same size. We drop one random item from the
+context of each reference edge. We also tried a learned scorer: a logistic
+regression trained on opted-in customers to separate IN from INF, whose labels
+are free, and then applied to opted-out customers. It must use only features
+derived from $F$. Features computed from the edge lists, such as an item's
+degree, include the edge itself and so encode the group by construction. With
+them, the learned scorer rejected $H_0$ on 75\% of clean days. With $F$-derived
+features only, it is calibrated, but in our simulator it does not beat the
+cosine score.
+
+\paragraph{Avoiding the pitfalls.}
+OUT and FRESH come from the same customers, so correlated behavior (C1)
+cancels. Both groups are scored with the same day's features, so retraining
+noise (C2) affects them alike, and cosine similarity within one embedding
+space is unchanged by rotations (C3).
+
+\subsection{T7: Active canaries as a reference test}
+T1--T6 are \emph{passive}: they use only data the platform produces anyway. If
 the auditor can write to the system, it can create its own Bobs, whose
-behavior it controls. T6 does this. Because its validity rests on the
+behavior it controls. T7 does this. Because its validity rests on the
 auditor's own randomization, we use it as a reference against which the
 passive tests are measured.
 
@@ -878,15 +967,15 @@ treated and control items alike (C2, C3). No locality assumption is needed
 (C4).
 
 \paragraph{Role as a baseline.}
-T6's validity is guaranteed and its power is set by the canary budget, so it
+T7's validity is guaranteed and its power is set by the canary budget, so it
 serves as a yardstick in two ways. In Section~\ref{sec:exp}, it measures how
 much power the passive tests achieve without write access. In deployment, a
 small periodic canary campaign checks the passive tests on the real pipeline.
-If T6 detects a leak that T1--T5 miss, the passive tests are blind to that
+If T7 detects a leak that T1--T6 miss, the passive tests are blind to that
 leakage mode, and the audit's reported bounds must say so.
 
 \paragraph{Costs.}
-T6 requires write access, which an external assessor may lack. Its power grows
+T7 requires write access, which an external assessor may lack. Its power grows
 with the number of canary edges. Canary accounts should touch only cold items
 and stay opted out, so that a compliant pipeline ignores them and real users
 are unaffected. They must also be indistinguishable from real accounts to the
@@ -961,7 +1050,7 @@ should instead report a \emph{detection bound}: ``had the pipeline leaked a
 fraction $\rho$ of opted-out edges, an alarm would have been raised within $T$
 days with probability at least $1-\beta$.'' Computing this bound requires a
 version of the pipeline into which leaks can be injected. With write access,
-T6 provides it on the real pipeline. Without write access, the auditor builds
+T7 provides it on the real pipeline. Without write access, the auditor builds
 a surrogate pipeline on the observed data and injects leaks there, as we do in
 Section~\ref{sec:exp}. Using those results as an illustration, a final report
 would read: \emph{``No leakage was detected. Leakage of 2\% or more of opted-out
@@ -995,36 +1084,52 @@ edges, selected by a fixed hash, to (i) and customer pooling only. The
 \emph{representation-leak} pipeline adds them to (ii) and (iii) only. The SVD is reseeded
 daily, so all pipelines are stochastic.
 
+\paragraph{Leak patterns.}
+We choose which opted-out edges leak in two ways, with the same expected
+fraction $\rho$. In \emph{per-edge} leakage, each opted-out edge leaks independently,
+selected by a fixed hash of the edge. In \emph{per-customer} leakage, a fraction
+$\rho$ of opted-out customers leak all of their edges, as when the consent table is
+stale for some customers. Real bugs are more often of the second kind, or leak
+a whole interaction type at once.
+
 \paragraph{Tests.}
 We run T1, T2 ($k{=}1$ for aggregates and $k{=}2$ for embeddings), T4 (ridge,
 5-fold cross-fitting, with surrogate $Z$ = typed log-counts, $x$, a rank-32 SVD
-of $\Ein$ and a propagation over $\Ein$) and T5. Our pipelines have no caching,
-so T3 adds nothing here and we omit it. T6 runs in a separate simulation with
+of $\Ein$ and a propagation over $\Ein$), T5 and T6. For T6 we report the cosine
+score, and we also ran the learned scorer. Our pipelines have no caching,
+so T3 adds nothing here and we omit it. T7 runs in a separate simulation with
 the same seeds. It adds $C=20$ canary accounts that each buy $m=4$ items. That
 gives 80 treated items, 80 control items and 80 canary edges per day, about 3\%
 of the roughly 2{,}400 organic opted-out edges. A typical day yields
 34 canaries against 210 cold items, 40 treated and 406 control items for T2,
-and 298 real against 412 placebo item-disjoint pairs for T5.
+298 real against 412 placebo item-disjoint pairs for T5, and about 60
+opted-out customers with both suspect and reference edges for T6.
 
 \paragraph{Calibration.}
 Over 30 clean audits (300 test-days), the per-day rejection rates at $\alpha=0.05$
-are 1\% (T1), 3\% (T2), 0\% (T4), 2\% (T5) and 0\% (T6). No e-process, individual
-or averaged, crosses $1/\alpha=20$ in any audit.
+are 1\% (T1), 3\% (T2), 0\% (T4), 2\% (T5), 4\% (T6; 6\% with the learned scorer)
+and 0\% (T7). No e-process, individual or averaged, crosses $1/\alpha=20$ in any
+audit.
 
-Two failures along the way are worth reporting, because both look reasonable.
+Several failures along the way are worth reporting, because all of them look
+reasonable.
 First, defining T2's invariance on untyped (customer, item) pairs yields a
 \textbf{44\%} false-positive rate. Resampled customers often re-pick the same item
 with a different type, which legitimately changes typed counts (C5). Second,
 building T5's placebo from only the \emph{new} edges of day $t{+}1$, with
 pair-level OLS errors, yields \textbf{18--20\%}. New edges are biased away
 from items a customer already had, and overlapping pairs violate independence.
-Both failures are confounding, not lack of power, and neither is visible
-without a null study.
+T6 repeated both lessons in pilot runs. A learned scorer that also used item
+degree and context size rejected $H_0$ on 75\% of clean days, because these
+features differ between current and next-day edges by construction. With
+$F$-derived features only, but with only the \emph{new} next-day edges as the
+reference, it still rejected on 44\%. All of these failures are confounding,
+not lack of power, and none is visible without a null study.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{power.pdf}
-\caption{Per-day rejection rate ($\alpha=0.05$) against the fraction $\rho$ of opted-out edges leaked, averaged over 5 seeds $\times$ 10 days. Dotted line: nominal level. Dashed black: the T6 reference with 80 canary edges per day. T4 targets aggregates only, and T5 targets representation leakage only.}
+\caption{Per-day rejection rate ($\alpha=0.05$) against the fraction $\rho$ of opted-out edges leaked, averaged over 5 seeds $\times$ 10 days. Rows: leak pattern. Columns: leakage channel. Dotted line: nominal level. Dashed black: the T7 reference with 20 canary accounts and 80 canary edges per day. T4 targets aggregates only; T5 and T6 target representation leakage only.}
 \label{fig:power}
 \end{figure}
 
@@ -1035,47 +1140,68 @@ without a null study.
 \toprule
  & \multicolumn{5}{c}{leak rate $\rho$} \\
 \cmidrule(l){2-6}
-Pipeline / tests & .02 & .05 & .10 & .25 & 1.0 \\
+Leak / channel / tests & .02 & .05 & .10 & .25 & 1.0 \\
 \midrule
+\multicolumn{6}{@{}l}{\emph{Per-edge leaks}} \\
 Aggregation, passive & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
-Aggregation, T6      & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
+Aggregation, T7      & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
 Representation, passive & 0/5 & 3/5 (3) & 5/5 (2) & 5/5 (1) & 5/5 (1) \\
-Representation, T6      & 0/5 & 4/5 (4.5) & 5/5 (2) & 5/5 (2) & 5/5 (2) \\
+Representation, T7      & 0/5 & 4/5 (4.5) & 5/5 (2) & 5/5 (2) & 5/5 (2) \\
+\multicolumn{6}{@{}l}{\emph{Per-customer leaks}} \\
+Aggregation, passive & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
+Aggregation, T7      & 2/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
+Representation, passive & 5/5 (7) & 5/5 (2) & 5/5 (1) & 5/5 (1) & 5/5 (1) \\
+Representation, T7      & 2/5 (5.5) & 5/5 (5) & 5/5 (2) & 5/5 (2) & 5/5 (2) \\
 \midrule
-Clean, passive and T6 & \multicolumn{5}{c}{0/30 false alarms each} \\
+Clean, passive and T7 & \multicolumn{5}{c}{0/30 false alarms each} \\
 \bottomrule
 \end{tabular}
-\caption{Audits in which the e-process reached $20$ within 10 days (median detection day in parentheses). ``Passive'' averages the e-processes of T1, T2, T4 and T5; T6 uses 80 canary edges per day.}
+\caption{Audits in which the e-process reached $20$ within 10 days (median detection day in parentheses). ``Passive'' averages the e-processes of T1, T2, T4, T5 and T6; T7 uses 20 canary accounts and 80 canary edges per day.}
 \label{tab:detect}
 \end{table}
 
 \paragraph{Power.}
 Figure~\ref{fig:power} and Table~\ref{tab:detect} summarize the results.
 
-\emph{Aggregation leakage.} T1 alone rejects on every day even at $\rho=0.02$,
-which leaks roughly 0.2\% of all edges. An opted-out customer with any leaked
-edge has a non-default feature, and the exact check catches it. T2's exact
-aggregate check follows closely. T4 needs $\rho\ge 0.25$, because summarizing
-$\Eout$ by degree throws away the identity of the leaked edges.
+\emph{Per-edge leaks, aggregation.} T1 alone rejects on every day even at
+$\rho=0.02$, which leaks roughly 0.2\% of all edges. An opted-out customer with
+any leaked edge has a non-default feature, and the exact check catches it.
+T2's exact aggregate check follows closely. T4 needs $\rho\ge 0.25$, because
+summarizing $\Eout$ by degree throws away the identity of the leaked edges.
 
-\emph{Representation leakage} is harder. The combined passive e-process
-detects it on day 2 at $\rho=0.1$, and in 3 of 5 audits at $\rho=0.05$. T1 is
-again the most powerful single test: the factorization assigns a nonzero
-embedding to canary items whose training column is no longer empty. T5
-detects only $\rho\ge 0.25$. It remains valuable, though, because it does not
-depend on long-tail canaries or invariant neighborhoods, which dense graphs
-and merchant-level features may lack.
+\emph{Per-edge leaks, representation} are harder. The combined passive
+e-process detects them by day 2 (median) at $\rho=0.1$, and in 3 of 5 audits at
+$\rho=0.05$. T1 is again the most powerful single test: the factorization
+assigns a nonzero embedding to canary items whose training column is no
+longer empty. T5 detects only $\rho\ge 0.25$, and T6 only $\rho=1$. This is the
+$\rho^2$ effect predicted in Section~\ref{sec:tests}: a link between two items
+needs two leaked edges of the same customer.
 
-\emph{Passive tests against the T6 reference.} T6 is exactly valid, with zero
+\emph{Per-customer leaks} change the picture for the co-interaction tests.
+When whole customers leak, their edges leak together, so T5 rejects on 88\%
+of days and T6 on 50\% at $\rho=0.25$, against 22\% and 4\% for per-edge leaks.
+T6's effect size $\lambda$ now tracks the leak rate: its median is 0.29 at
+$\rho=0.25$ and 0.98 at $\rho=1$. It is biased upward by about 0.09, its median on
+clean days, so it is informative only well above that level. The combined
+passive e-process detects every per-customer leak, including $\rho=0.02$ in the
+representation, where the median detection day is 7. The learned T6 scorer
+behaves like the cosine score throughout. Its per-day rejection rates differ
+by at most 0.06.
+
+\emph{Passive tests against the T7 reference.} T7 is exactly valid, with zero
 false alarms, and detects every leak with $\rho\ge 0.1$. The passive T1 matches
-or beats it in every setting except one: representation leakage at $\rho=0.1$,
-where T6 rejects on 86\% of days and T1 on 84\%. At $\rho=0.02$ (aggregation), T1 rejects on 100\% of
-days and T6 on 78\%. At $\rho=0.05$ (representation), the figures are 60\% and
-28\%. The reason is budget: natural opt-outs supply about 30 times more
-``canary edges'' per day than our 80 synthetic ones, at no cost. T2 reaches T6's
-power from $\rho=0.1$, while T4 and T5 fall well short of it. Two lessons follow.
-First, a passive audit built on natural canaries can be as powerful as a
-modest active campaign, without write access. Second, T6's value lies in its
+or beats it in every setting except one: per-edge representation leakage at
+$\rho=0.1$, where T7 rejects on 86\% of days and T1 on 84\%. For per-edge leaks,
+the reason is budget: natural opt-outs supply about 30 times more ``canary
+edges'' per day than our 80 synthetic ones, at no cost. For per-customer
+leaks, the gap is starker, because T7 becomes a lottery. With 20 canary
+accounts and $\rho=0.02$, the chance that any canary account leaks is
+$1-0.98^{20}\approx 33\%$, and T7 detects only 2 of 5 audits. The roughly 300
+natural opted-out customers contain about 6 leaking customers on any day.
+Two lessons follow. First, a passive audit built on natural canaries can be
+as powerful as a modest active campaign, without write access. Under
+per-customer leakage, an active campaign should spend its budget on many
+accounts rather than many edges per account. Second, T7's value lies in its
 guaranteed validity, not its power. It checks the passive tests on the real
 pipeline, where their assumptions cannot be verified directly.
 
@@ -1101,16 +1227,16 @@ through neighbors.
 
 \paragraph{Graph privacy attacks.}
 Link-stealing and GNN membership
-inference~\citep{he2021stealing,olatunji2021membership} show that node outputs reveal edges. T5 turns
-this attack into an audit statistic and adds a placebo to separate memorization
-from homophily.
+inference~\citep{he2021stealing,olatunji2021membership} show that node outputs reveal edges. T5 and T6 turn
+this attack into audit statistics, with placebo and same-customer references
+that separate memorization from homophily.
 
 \paragraph{Limitations.}
 Simulations cannot establish calibration on real behavioral data. Before
 deployment, every test should first be run on days or slices where compliance
 is known, such as a pipeline replica fed only $\Ein$. Assumption~\ref{ass:local} and the
 exchangeability behind T5's placebo are modeling choices. Seasonality or
-product launches can break them. T6 does not depend on either, which is why we
+product launches can break them. T7 does not depend on either, which is why we
 recommend periodic canary campaigns wherever write access exists. Daily e-values are not strictly independent. Finally,
 Proposition~\ref{prop:imposs} bounds what any of this can achieve against a
 pipeline that leaks deliberately and sparsely. Code audits, data lineage and

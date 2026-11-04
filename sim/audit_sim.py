@@ -59,9 +59,17 @@ class World:
         return dict(u=u, i=i, t=t, out=out, optout=self.optout.copy(), x=self.x)
 
 
+LEAK_PATTERN = "edge"   # "edge": each opted-out edge leaks independently;
+                        # "user": a fraction rho of opted-out customers leak all their edges
+LEAK_SALT = 0           # varies which customers leak across seeds (per-customer pattern)
+
+
 def leaked_mask(u, i, rho):
-    """Deterministic per-edge hash so the same opt-out edges leak every day."""
-    h = (u.astype(np.int64) * 1000003 + i.astype(np.int64) * 7919) % 100003
+    """Deterministic hash so the same opted-out edges (or users) leak every day."""
+    if LEAK_PATTERN == "user":
+        h = ((u.astype(np.int64) + 7919 * LEAK_SALT) * 2654435761) % 100003
+    else:
+        h = (u.astype(np.int64) * 1000003 + i.astype(np.int64) * 7919) % 100003
     return h / 100003.0 < rho
 
 

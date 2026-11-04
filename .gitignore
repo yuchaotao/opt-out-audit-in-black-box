@@ -7,3 +7,4 @@
 __pycache__/
 sim/*.json
 sim/*.log
+sim/log_*.txt
