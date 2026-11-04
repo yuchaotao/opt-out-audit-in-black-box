@@ -29,7 +29,7 @@
 \newcommand{\Eall}{E_{\mathrm{all}}}
 \newcommand{\indep}{\perp\!\!\!\perp}
 \newcommand{\N}{\mathcal{N}}
-\newcommand{\edit}[1]{{EDIT: \color{red} #1}}
+\newcommand{\edit}[1]{{\color{red}(EDIT: #1 )}}
 
 \title{\Large\bfseries Trust, but Verify: Black-Box Auditing of Opt-Out Compliance\\ in Graph Feature Pipelines}
 \author{Anonymous Authors\\ \normalsize Submitted to the Workshop on Privacy-Preserving Artificial Intelligence (PPAI)}
@@ -260,7 +260,7 @@ near an opted-out edge, so tests confined to local neighborhoods can miss it.
 \paragraph{What cannot be shown.}
 Conditional-independence testing has no uniformly valid test with
 nontrivial power against all
-alternatives~\citep{shah2020hardness}. A simpler argument suffices here.
+alternatives~\citep{shah2020hardness}. A simpler argument suffices here. \edit{I don't quite follow here. Can you elaborate more?}
 
 \begin{proposition}[No certificate of zero use]\label{prop:imposs}
 Let $f_0$ satisfy $H_0$, and let $f_1$ agree with $f_0$ except on an input event of
@@ -283,6 +283,8 @@ $\varepsilon$ would have been detected with probability at least $1-\beta$; none
 %=====================================================================
 \section{Why Naive Tests Fail}\label{sec:challenges}
 %=====================================================================
+\edit{This section is hard to digest. Elaborate more with easy-to-understand examples. A running example that is reused across the paper would be better.}
+
 \textbf{C1: Behavioral correlation.} Popular items are popular among both
 groups, and customers with similar tastes buy similar items regardless of
 consent. Hence ``$F$ predicts $\Eout$'' is expected under $H_0$, and any test must
