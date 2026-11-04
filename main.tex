@@ -12,6 +12,7 @@
 \usepackage{enumitem}
 \usepackage[round]{natbib}
 \usepackage{xcolor}
+\usepackage{tikz}
 \usepackage[hidelinks]{hyperref}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
@@ -236,6 +237,54 @@ $F^t=\{F_v^t\}_{v\in\mathcal{U}\cup\mathcal{I}\cup\mathcal{M}}$. The auditor obs
 $\mathcal{D}_T=\{(\Ein^t,\Eout^t,F^t)\}_{t=1}^{T}$ but neither $f$ nor its internal
 randomness $\xi^t$.
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  every node/.style={font=\scriptsize},
+  cust/.style={draw, circle, minimum size=7mm, inner sep=0pt, fill=white},
+  optout/.style={cust, fill=gray!25, dashed},
+  item/.style={draw, rounded corners=2pt, minimum width=15mm, minimum height=5mm, fill=white},
+  merch/.style={draw, minimum width=14mm, minimum height=6mm, fill=gray!8},
+  ein/.style={thick},
+  eout/.style={thick, dashed, red!70!black},
+  own/.style={gray, thin},
+  lab/.style={font=\tiny, fill=white, inner sep=0.5pt}
+]
+\node[cust] (A) at (0,3.3) {Alice};
+\node[optout] (B) at (0,2.2) {Bob};
+\node[cust] (C) at (0,1.1) {Carol};
+\node[cust] (D) at (0,0) {Dan};
+\node[item] (E) at (2.6,3.3) {Espresso};
+\node[item] (G) at (2.6,2.2) {Grinder};
+\node[item] (K) at (2.6,1.1) {Kettle};
+\node[item] (S) at (2.6,0) {Tea scoop};
+\node[merch] (M1) at (5,2.2) {BrewCo};
+\node[merch] (M2) at (5,0) {Kyoto Crafts};
+\draw[ein]  (A) -- node[lab, pos=0.35]{buy} (E);
+\draw[ein]  (A) -- node[lab, pos=0.25]{view} (G);
+\draw[eout] (B) -- node[lab, pos=0.25]{buy} (E);
+\draw[eout] (B) -- node[lab, pos=0.35]{buy} (G);
+\draw[eout] (B) -- node[lab, pos=0.62]{buy} (S);
+\draw[ein]  (C) -- node[lab, pos=0.7]{buy} (G);
+\draw[ein]  (C) -- node[lab, pos=0.35]{buy} (K);
+\draw[ein]  (D) -- node[lab, pos=0.25]{buy} (K);
+\draw[own] (E) -- (M1); \draw[own] (G) -- (M1); \draw[own] (K) -- (M1);
+\draw[own] (S) -- (M2);
+\node[font=\tiny, align=left, anchor=west] at (3.9,3.45) {solid: $\Ein$ \quad dashed: $\Eout$\\ shaded: opted out};
+\end{tikzpicture}
+\caption{Running example on Monday. Bob has opted out, so his three purchases form $\Eout$. The Tea scoop, and with it Kyoto Crafts, was bought only by Bob. Dan will opt out on Tuesday.}
+\label{fig:running}
+\end{figure}
+
+\paragraph{Running example.}
+Figure~\ref{fig:running} shows a toy marketplace that we reuse throughout the
+paper. Alice, Carol and Dan are opted in, and Bob is opted out. A compliant
+pipeline must produce exactly the features it would produce if Bob's three
+dashed edges did not exist. For example, the Grinder's purchase count must be
+1 (Carol), not 2. The Tea scoop must look like an item nobody has bought.
+Kyoto Crafts, whose only sale came from Bob, must look like a merchant with no
+sales.
+
 \paragraph{Hypothesis.}
 A compliant pipeline satisfies, for some measurable $f_0$,
 \begin{equation}
@@ -258,9 +307,25 @@ second channel is the harder one to detect. It need not change any feature
 near an opted-out edge, so tests confined to local neighborhoods can miss it.
 
 \paragraph{What cannot be shown.}
-Conditional-independence testing has no uniformly valid test with
-nontrivial power against all
-alternatives~\citep{shah2020hardness}. A simpler argument suffices here. \edit{I don't quite follow here. Can you elaborate more?}
+Could an auditor ever \emph{certify} that a pipeline is compliant? The answer
+is no, and the reason shapes everything that follows.
+
+Testing $H_0$ is a conditional-independence (CI) test: we ask whether $F$
+still depends on $\Eout$ once $\Ein$ is known. \citet{shah2020hardness} prove
+that CI testing is hard in a strong sense. When the conditioning variable is
+continuous, any test that keeps its false-positive rate at most $\alpha$ under
+\emph{every} null distribution has power at most $\alpha$ against \emph{every}
+alternative. Put simply, a test cannot be both always valid and ever useful
+unless we add assumptions about what the data can look like. Their result
+concerns general distributions, and our setting has extra structure (a graph
+and a fixed pipeline), so we do not rely on it directly. A more elementary
+argument fits our setting and gives a concrete number.
+
+Picture a buggy pipeline $f_1$ that behaves exactly like a compliant $f_0$
+except on rare inputs. In Figure~\ref{fig:running}, $f_1$ might include
+Bob's purchases only when a nightly job retries after a timeout and skips the
+consent join. On every other day the two pipelines produce identical outputs,
+so no statistic of the outputs can tell them apart on those days.
 
 \begin{proposition}[No certificate of zero use]\label{prop:imposs}
 Let $f_0$ satisfy $H_0$, and let $f_1$ agree with $f_0$ except on an input event of
@@ -275,44 +340,99 @@ $T\delta$. Hence the total-variation distance between the laws of
 $\mathcal{D}_T$ is at most $T\delta$, and the acceptance probabilities differ by at most
 that much.
 \end{proof}
-Proposition~\ref{prop:imposs} rules out deliberate, sparse leakage. Black-box
-auditing is therefore a tool against \emph{bugs}, not adversarial pipelines. Its
-honest output is a statement of the form ``leakage of magnitude at least
-$\varepsilon$ would have been detected with probability at least $1-\beta$; none was.''
+For a concrete sense of scale, suppose the retry bug fires on one day in a
+thousand ($\delta=0.001$) and the audit runs for a 30-day quarter. Then
+\emph{every} level-0.05 test detects it with probability at most
+$0.05+0.03=0.08$, however clever the test. More generally, the auditor cannot
+distinguish ``never leaks'' from ``leaks rarely enough.'' The same argument
+covers a deliberately evasive pipeline, which can make its leaking event as
+rare as it likes. Black-box auditing is therefore a tool against \emph{bugs},
+not adversarial pipelines. Bugs tend to be systematic: a missing filter
+affects every day and many nodes, which is what makes them detectable. The
+honest output of an audit is a statement of the form ``leakage of magnitude
+at least $\varepsilon$ would have been detected with probability at least
+$1-\beta$; none was.''
 
 %=====================================================================
 \section{Why Naive Tests Fail}\label{sec:challenges}
 %=====================================================================
-\edit{This section is hard to digest. Elaborate more with easy-to-understand examples. A running example that is reused across the paper would be better.}
+The obvious audit compares features with what the auditor expects and flags
+any surprise. Each challenge below makes that naive comparison raise false
+alarms, or miss real leaks. We illustrate each one with
+Figure~\ref{fig:running}. Table~\ref{tab:challenges} summarizes them, together
+with the safeguard each test in Section~\ref{sec:tests} uses.
 
-\textbf{C1: Behavioral correlation.} Popular items are popular among both
-groups, and customers with similar tastes buy similar items regardless of
-consent. Hence ``$F$ predicts $\Eout$'' is expected under $H_0$, and any test must
-control for what $\Ein$ already explains.
+\begin{table}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Challenge & Naive test that breaks & Safeguard \\
+\midrule
+C1 correlation & ``$F$ predicts $\Eout$'' & controls, placebo \\
+C2 stochasticity & ``$F$ changed'' & noise-floor control group \\
+C3 rotation & coordinate differences & alignment, invariants \\
+C4 receptive field & 1-hop invariance & $k$-hop invariance \\
+C5 edge identity & untyped invariance & typed edges \\
+C6 opt-out scope & --- & fix definition first \\
+\bottomrule
+\end{tabular}
+\caption{Why naive tests fail, and the safeguard each test uses.}
+\label{tab:challenges}
+\end{table}
 
-\textbf{C2: Stochasticity.} Training noise, random initialization and
-approximate solvers make $F^t$ random even for fixed inputs. A change in $F$ is
-not evidence by itself, and the noise floor must be estimated from the data.
+\textbf{C1: Opted-in and opted-out behavior are correlated.}
+Bob opted out, but his tastes are not unusual. Alice also likes coffee. She
+bought the Espresso machine and viewed the Grinder. A compliant pipeline
+therefore places the Espresso machine and the Grinder close together, using
+Alice's edges alone. Bob also bought both. So the naive test ``items Bob
+co-bought are close in feature space'' fires even though Bob's edges were never
+used. In general, popular items are popular in both groups, and similar
+customers buy similar items whatever their consent status. Any test must ask
+whether $F$ predicts $\Eout$ \emph{beyond what $\Ein$ already explains}.
 
-\textbf{C3: Non-identifiability.} Retrained embeddings are identified only up
-to an orthogonal transformation (and scale). Day-over-day comparisons require
-alignment, e.g., orthogonal Procrustes~\citep{schonemann1966procrustes}, or
-rotation-invariant statistics such as norms and cosine similarities.
+\textbf{C2: The pipeline is random.}
+Run Monday's pipeline twice on exactly the same input, and the Grinder's
+embedding comes out slightly different each time, because of random
+initialization, sampled negatives and approximate solvers. So the naive test
+``the Grinder's feature changed after Bob's edges changed'' proves nothing by
+itself. The auditor needs a control group of items whose inputs did not change,
+in order to measure how much features move for no reason.
 
-\textbf{C4: Receptive field.} A $k$-hop message-passing feature changes
-whenever anything in its $k$-hop neighborhood changes. Invariance arguments
-must therefore be made at the pipeline's true receptive field, which the
-auditor may have to estimate. Global components, such as a factorization fit
-on the whole graph, have an unbounded receptive field.
+\textbf{C3: Embeddings have no fixed coordinates.}
+Suppose Tuesday's retraining produces exactly the same geometry as Monday's,
+but rotated. Every item's coordinates change, while all distances and angles
+stay the same. A naive coordinate-by-coordinate comparison would report that
+every item changed. Day-over-day comparisons must first align the two
+embedding spaces, e.g., with orthogonal
+Procrustes~\citep{schonemann1966procrustes}, or use quantities that rotations
+do not change, such as norms and cosine similarities.
 
-\textbf{C5: Edge identity.} Interactions carry types, and the same
-(customer, item) pair can change type between days. Invariance must be
-checked on \emph{typed} edges. Section~\ref{sec:exp} shows that ignoring this
-alone produces a 44\% false-positive rate.
+\textbf{C4: Features depend on more than immediate neighbors.}
+Suppose the pipeline uses a two-layer GNN. The Grinder's embedding then depends
+on its buyers, and also on everything \emph{those} buyers bought. On Tuesday,
+Carol buys a new teapot. The Grinder's own buyers are unchanged, yet its
+embedding legitimately moves, because Carol's basket changed. A test that only
+checks whether an item's direct neighbors changed would blame this movement on
+Bob. Invariance must be checked over the pipeline's true receptive field,
+which the auditor may have to estimate. A component fit on the whole graph,
+such as a matrix factorization, has an unbounded receptive field.
 
-\textbf{C6: Scope of opt-out.} Whether opt-out is retroactive determines the
-correct $\Ein$ when the pipeline consumes history. The auditor must fix this
-definition before testing.
+\textbf{C5: The same pair can change edge type.}
+On Monday, Alice viewed the Grinder. On Tuesday, she buys it. The set of
+customers touching the Grinder is unchanged, but its purchase count rises
+from 1 to 2, which is correct. A test that tracks only (customer, item) pairs
+would see ``no opted-in change, yet the feature changed'' and blame Bob.
+Invariance must be checked on \emph{typed} edges. Section~\ref{sec:exp} shows
+that ignoring this alone produces a 44\% false-positive rate.
+
+\textbf{C6: The scope of an opt-out must be defined.}
+Dan opts out on Tuesday. His Monday purchase of the Kettle happened while he
+was opted in. If the pipeline computes 30-day purchase counts, should Tuesday's
+count for the Kettle include it? A retroactive policy says no, and a
+prospective policy says yes. Both are defensible, but they define different
+sets $\Ein$. The auditor must fix the definition before testing, or the same
+pipeline can be judged both compliant and leaking.
 
 %=====================================================================
 \section{Audit Tests}\label{sec:tests}
@@ -361,7 +481,10 @@ Opted-out customers are customer-level canaries. Their features must equal the
 pipeline's default output, so an exact check applies whenever that default is
 deterministic. Long-tailed catalogs supply dozens of new canaries every day.
 Because both groups have the same (empty) $\Ein$ neighborhood, this test is
-nearly immune to C1 and C4.
+nearly immune to C1 and C4. In Figure~\ref{fig:running}, the Tea scoop is a
+canary. Its purchase count must be 0, and its embedding must look like that of
+a never-bought item with similar intrinsic features. Kyoto Crafts is a
+merchant-level canary, and Bob is a customer-level canary.
 
 \subsection{T2: Zero-difference on invariant neighborhoods}
 Consider items whose typed $k$-hop $\Ein$ neighborhood is identical on days $t$ and
@@ -371,6 +494,10 @@ day-over-day change $\Delta F_i$ arises only from $\Delta\Theta$ and noise. We r
 log of the aligned relative change on treatment, adjusting for degree, and
 test the treatment coefficient. For a deterministic $1$-hop aggregate, any
 nonzero change in a treated item is a violation, which gives an exact test.
+In Figure~\ref{fig:running}, suppose Bob reviews the Espresso machine on
+Tuesday, while no opted-in edge changes within the Espresso machine's receptive
+field. The Espresso machine is then treated. Its feature may move, but no more
+than the features of control items do (C2).
 
 \subsection{T3: Status-switch difference-in-differences}
 When customer $u$ switches from opted-in to opted-out, every item $u$ touched
@@ -378,8 +505,11 @@ should change by exactly $u$'s contribution. For aggregates, that contribution
 can be computed from the edge list. Comparing these items with matched,
 unaffected items in a difference-in-differences
 design~\citep{angrist2009mostly} detects pipelines that are slow to apply
-new opt-outs (a stale cache). Switches back to opt-in are also informative:
-signal appearing \emph{before} the switch is leakage.
+new opt-outs (a stale cache). For example, when Dan opts out on Tuesday, a
+retroactive policy (C6) requires the Kettle's purchase count to drop from 2 to
+1 that same day. If it drops only on Thursday, a cache is stale. Switches back
+to opt-in are also informative: signal appearing \emph{before} the switch is
+leakage.
 
 \subsection{T4: Residual regression with surrogate controls}
 Let $S^{\mathrm{out}}_i$ be a summary of $i$'s opted-out edges, such as log degree. Under
@@ -389,19 +519,28 @@ counts, a factorization and a propagation of $x$ over $\Ein$) and test whether
 adding $F_i$ to $Z_i$ improves cross-fitted prediction of $S^{\mathrm{out}}_i$, in the
 spirit of double machine learning~\citep{chernozhukov2018double}. The test is
 valid if $Z$ is rich enough to absorb the dependence between $\Ein$ and $\Eout$,
-which is precisely C1. In our experiments it is conservative.
+which is precisely C1. In our experiments it is conservative. In
+Figure~\ref{fig:running}, $S^{\mathrm{out}}_i$ is 1 for the Espresso machine, the Grinder
+and the Tea scoop, and 0 for the Kettle. The question is whether $F$ predicts
+these counts better than the auditor's own $\Ein$-based features do.
 
 \subsection{T5: Co-occurrence membership inference with a temporal placebo}
 Representation leakage memorizes structure in the
 parameters~\citep{shokri2017membership,carlini2022first}. On graphs, co-interaction
 is the natural unit~\citep{he2021stealing,olatunji2021membership}. Let
 $\mathcal{R}^t$ be item pairs that co-occur \emph{only} through opted-out customers today.
-Their cosine similarity in $F^t$ should not be elevated. However, such pairs are
-related by taste (C1), so a fixed non-edge baseline is biased.
+Their cosine similarity in $F^t$ should not be elevated. In
+Figure~\ref{fig:running}, Bob is the only customer who bought both the Grinder
+and the Tea scoop. If their embeddings are unusually close, Bob's basket has
+leaked into the parameters. However, such pairs are related by taste (C1):
+people who buy grinders and tea scoops share interests, whoever they are. A
+fixed baseline of random non-co-purchased pairs is therefore biased.
 
 We therefore construct a \emph{temporal placebo}. Let $\mathcal{Q}^t$ be pairs that
 co-occur only through the \emph{fresh} interactions observed on day $t{+}1$, which
-the day-$t$ pipeline could not have seen. Both sets are draws from the same
+the day-$t$ pipeline could not have seen. For example, if Carol buys a teapot
+and a tea tin together on Tuesday, that pair enters Monday's placebo set.
+Both sets are draws from the same
 behavior model under identical exclusions: neither pair set co-occurs in
 $\Ein^t$, and each excludes the other source. They therefore share the
 confounding of C1. We regress similarity on group membership, adjusting for
@@ -412,8 +551,9 @@ exclusion and the disjointness are necessary.
 
 \subsection{T6: Active canaries}
 If the auditor can write to the system, it can enroll synthetic opted-out
-accounts whose behavior is drawn from a secret random design, for example
-purchases of a random set of long-tail items. This mirrors canary insertion in
+accounts whose behavior is drawn from a secret random design. For example,
+an opted-out test account ``Eve'' buys a secretly chosen random set of
+long-tail items, and so creates canaries like the Tea scoop on purpose. This mirrors canary insertion in
 memorization and DP
 auditing~\citep{carlini2019secret,jagielski2020auditing,steinke2023one}. Because
 the design is randomized, T1 and T5 become randomization tests whose
