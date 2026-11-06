@@ -142,7 +142,10 @@ def t1_canary(snap, F):
     deg_in = np.bincount(i[~out], minlength=I); deg_out = np.bincount(i[out], minlength=I)
     canary = (deg_in == 0) & (deg_out > 0); cold = (deg_in == 0) & (deg_out == 0)
     nrm = np.linalg.norm(F["item"], axis=1)
-    p_item = perm_test_mean_diff(nrm[canary], nrm[cold]) if canary.sum() and cold.sum() else 1.0
+    cold_idx = np.where(cold)[0]
+    if len(cold_idx) > 5000:          # cap the comparison group (random, data-independent)
+        cold_idx = np.random.default_rng(len(cold_idx)).choice(cold_idx, 5000, replace=False)
+    p_item = perm_test_mean_diff(nrm[canary], nrm[cold_idx]) if canary.sum() and len(cold_idx) else 1.0
     # exact check: opted-out customers must sit at the pipeline's default output
     oc = snap["optout"]
     cust_dev = np.linalg.norm(F["cust"][oc], axis=1)

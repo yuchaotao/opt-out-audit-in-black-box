@@ -1,0 +1,86 @@
+{
+ "C1_naive_any": {
+  "synth": 0.9966666666666667,
+  "real": 1.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C1_naive_only": {
+  "synth": 0.9433333333333334,
+  "real": 1.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C1_fix_T5": {
+  "synth": 0.02,
+  "real": 0.3,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C2_naive": {
+  "synth": 1.0,
+  "real": 1.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C2_fix_T2": {
+  "synth": 0.03,
+  "real": 0.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C3_naive": {
+  "synth": 1.0,
+  "real": 1.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C3_fix": {
+  "synth": 0.0,
+  "real": 1.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C4_naive_1hop": {
+  "synth": 0.08,
+  "real": 0.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C4_fix_2hop": {
+  "synth": 0.05333333333333334,
+  "real": 0.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C5_naive_untyped_agg": {
+  "synth": 0.46,
+  "real": 0.7,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C5_naive_untyped_emb": {
+  "synth": 0.05333333333333334,
+  "real": 0.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C5_fix_typed_agg": {
+  "synth": 0.0,
+  "real": 0.0,
+  "n_synth": 300,
+  "n_real": 40
+ },
+ "C6_naive": {
+  "synth": NaN,
+  "real": 0.9,
+  "n_synth": 0,
+  "n_real": 40
+ },
+ "C6_fix": {
+  "synth": NaN,
+  "real": 0.0,
+  "n_synth": 0,
+  "n_real": 40
+ }
+}

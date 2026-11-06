@@ -8,3 +8,5 @@ __pycache__/
 sim/*.json
 sim/*.log
 sim/log_*.txt
+data/retailrocket/events.csv
+data/retailrocket/processed.npz

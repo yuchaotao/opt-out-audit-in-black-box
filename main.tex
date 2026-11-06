@@ -15,6 +15,7 @@
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,decorations.pathreplacing,fit,backgrounds}
 \usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
 \setlength{\parskip}{0pt}
@@ -52,9 +53,11 @@ $(\Ein^t, \Eout^t, F^t)$: opted-in edges, opted-out edges and produced
 node features. We cast compliance as the conditional-independence hypothesis
 $F \indep \Eout \mid \Ein$, and we note that no black-box procedure can
 certify zero use: it can only detect leakage above a threshold and bound what
-remains. We identify the confounders that make naive tests unsound: the
-correlation between opted-in and opted-out behavior, pipeline stochasticity,
-rotational non-identifiability of embeddings and receptive-field mismatch.
+remains. We identify the confounders that make naive tests unsound,
+including the correlation between opted-in and opted-out behavior, pipeline
+stochasticity, rotational non-identifiability of embeddings, and the
+dependence and drift of real behavior. We measure each failure on compliant
+pipelines.
 We then propose six passive tests that exploit the problem's structure:
 natural canaries, zero-difference tests on invariant neighborhoods, opt-out
 status-switch difference-in-differences, residual regression with surrogate
@@ -65,8 +68,12 @@ e-values. In a synthetic study, the calibrated tests keep per-day false-positive
 rates at or below 4\% and raise no false alarm in 30 ten-day audits of a clean
 pipeline. They detect an aggregation bug that leaks 2\% of opted-out edges on
 day one. Natural canaries make the passive audit as powerful as an active
-campaign with 80 canary edges a day. We also show how several seemingly
-reasonable test designs produce false-positive rates of 18--75\%.
+campaign with 80 canary edges a day. On real e-commerce interactions
+(RetailRocket), tests built on structural facts stay calibrated and detect
+every simulated leak within two days. Tests built on behavioral exchangeability
+alarm on 13--29\% of compliant days until they use customer-level units and
+time-bracketed references. Naive tests raise false alarms on up to 100\% of
+compliant days.
 \end{abstract}
 
 %=====================================================================
@@ -135,8 +142,10 @@ whether $F^t$ was computed from $\Ein^t$ alone. Our contributions are:
   \item A sequential framework that combines daily evidence with e-values and
         reports calibrated leakage bounds instead of an unfalsifiable claim of
         compliance (Section~\ref{sec:stats}).
-  \item A synthetic study of calibration and power, including two instructive
-        calibration failures (Section~\ref{sec:exp}).
+  \item Experiments on synthetic data and on real e-commerce interactions
+        (RetailRocket). They measure how each naive test fails, and they show
+        which tests carry over to real behavior and which need refinements
+        (Section~\ref{sec:exp}).
 \end{enumerate}
 The framing follows empirical auditing of differential
 privacy~\citep{jagielski2020auditing,nasr2021adversary,steinke2023one}. In
@@ -362,10 +371,11 @@ $1-\beta$; none was.''
 \section{Why Naive Tests Fail}\label{sec:challenges}
 %=====================================================================
 Each challenge below starts from a natural \emph{naive test} that an auditor
-might write first. For each one, we give a positive example where the test
+might write first. Section~\ref{sec:naive} measures every one of these failures
+on compliant pipelines, both in our simulator and on real data. For each one, we give a positive example where the test
 works, catching a real leak in Figure~\ref{fig:running}. We then give a
 counterexample where the same test raises a false alarm on a compliant
-pipeline, and say what fixes it. Table~\ref{tab:challenges} summarizes the six
+pipeline, and say what fixes it. Table~\ref{tab:challenges} summarizes the seven
 challenges.
 
 \begin{table}[t]
@@ -381,9 +391,10 @@ C3 rotation & coordinates changed & alignment, invariants \\
 C4 receptive field & 1-hop invariance & $k$-hop invariance \\
 C5 edge identity & untyped invariance & typed edges \\
 C6 opt-out scope & current status on history & fix policy first \\
+C7 dependence, drift & i.i.d.\ units & customer units \\
 \bottomrule
 \end{tabular}
-\caption{Six naive tests, the challenge that breaks each one, and the fix used in Section~\ref{sec:tests}.}
+\caption{Seven naive tests, the challenge that breaks each one, and the fix used in Section~\ref{sec:tests}. Table~\ref{tab:naive} measures each failure.}
 \label{tab:challenges}
 \end{table}
 
@@ -398,12 +409,39 @@ correctly flags the leak.
 \cpart{When it fails.} Now take a compliant pipeline. Alice bought the Espresso
 machine and viewed the Grinder, so the pipeline places these two items close
 together using her edges alone. Bob also bought both, so the pair counts as
-an opted-out co-purchase, and the test fires anyway. The underlying problem is
-that Bob's tastes are not unusual. Popular items are popular in both groups, and
-similar customers buy similar items whatever their consent status.
-\cpart{Fix.} Ask whether $F$ predicts $\Eout$ \emph{beyond what $\Ein$ already
-explains}, using controls computed from $\Ein$ (T4) or a placebo that shares
-the same confounding (T5).
+an opted-out co-purchase, and the test fires anyway. On compliant pipelines,
+this naive test raises a false alarm on 100\% of days in our simulator and
+on 100\% on real data (Table~\ref{tab:naive}).
+\cpart{A stricter version.} Keep only pairs that \emph{only} opted-out customers
+co-purchased, so that no opted-in customer bought both items. This removes the
+Espresso machine--Grinder pair, and every other pair whose similarity a direct
+opted-in co-purchase explains. It still fails, with false alarms on 94\%
+of simulated days and 100\% of real days, for four reasons.
+\begin{itemize}
+  \item \emph{Indirect opted-in paths.} The Grinder and the Tea scoop were never
+        bought together by an opted-in customer. But if Carol bought the
+        Grinder and the Kettle, and Dan bought the Kettle and the Tea scoop,
+        the two items are two hops apart through opted-in edges.
+        Factorizations, GNNs and feature propagation all encode such
+        transitive similarity. In our simulator, 99\% of the pairs that pass
+        the stricter filter are still linked by an opted-in path of length two,
+        and these pairs carry all of the residual gap.
+  \item \emph{Shared taste and content.} Bob's basket reflects his preferences,
+        so its items are related in their intrinsic features. A pipeline
+        that feeds content embeddings into $F$ makes them similar even with no
+        opted-in path at all.
+  \item \emph{Selection.} The filter removes most pairs that involve popular
+        items. The surviving pairs are niche and sparse, so they differ from
+        random pairs in degree and in how noisy their embeddings are.
+  \item \emph{Coverage.} The filter says nothing about aggregates, and it inherits
+        the weakness that two items are linked only if two edges of the same
+        customer leaked.
+\end{itemize}
+\cpart{Fix.} A stricter filter on the suspect pairs cannot remove this
+confounding. What works is a reference group with the same structure: the
+same tastes, the same indirect paths and the same sparsity, but no possible
+leak. T5's temporal placebo provides one. Controls computed from $\Ein$ (T4)
+are an alternative.
 
 \textbf{C2: The pipeline is random.}
 \cpart{Naive test.} Find items whose opted-out edges changed overnight. If any
@@ -418,7 +456,9 @@ embeddings daily from a fresh random initialization. Even run twice on the same
 input, it gives every item a slightly different embedding, the Espresso machine
 included. The test fires on noise.
 \cpart{Fix.} Compare against a control group of items whose inputs did not
-change, which measures how much features move for no reason (T2).
+change, which measures how much features move for no reason (T2). On
+compliant pipelines, the naive test alarms on 100\% of simulated days and
+100\% of real days, and T2 on 3\% and 0\% (Table~\ref{tab:naive}).
 
 \textbf{C3: Embeddings have no fixed coordinates.}
 \cpart{Naive test.} For items whose inputs did not change, compare yesterday's
@@ -431,7 +471,13 @@ Monday's geometry, but rotated. All distances and angles are unchanged, yet
 every coordinate of every item differs. The test flags the entire catalog.
 \cpart{Fix.} Align the two spaces first, e.g., with orthogonal
 Procrustes~\citep{schonemann1966procrustes}, or compare only quantities that
-rotations preserve, such as norms and cosine similarities.
+rotations preserve, such as norms and cosine similarities. When embeddings are
+retrained from a random initialization each day, the naive test alarms on
+100\% of simulated and real days. Alignment cuts the median relative change of
+input-unchanged items from 1.40 to 0.014. In the simulator, the rule then never
+alarms. On real data it still alarms every day, because sparse items keep
+noisy embeddings (C2). T2 therefore aligns \emph{and} compares against a control
+group (Table~\ref{tab:naive}).
 
 \textbf{C4: Features depend on more than immediate neighbors.}
 \cpart{Naive test.} Restrict attention to items whose opted-in \emph{direct}
@@ -443,11 +489,18 @@ unchanged. If Bob buys a second grinder and the count rises, that is a leak.
 \cpart{When it fails.} Now suppose the embeddings come from a two-layer GNN. The
 Grinder's embedding then depends on its buyers \emph{and on everything those
 buyers bought}. On Tuesday, Carol buys a new teapot. The Grinder's direct
-neighbors are unchanged, but its embedding legitimately moves, and the test
-blames Bob.
+neighbors are unchanged, but its embedding legitimately moves. If such
+movements happen more often to items with opted-out changes, for example
+because both are popular, the test blames Bob.
 \cpart{Fix.} Check invariance over the pipeline's true receptive field ($k$
 hops), which the auditor may have to estimate (T2). A component fit on the
 whole graph, such as a matrix factorization, has an unbounded receptive field.
+In our experiments this effect was small. With a 1-hop check, T2's embedding
+test alarms on 8\% of simulated days and 0\% of real days, against 5\% and 0\%
+with the 2-hop check (Table~\ref{tab:naive}). The changes a 1-hop check misses
+hit treated and control items alike, so they bias the comparison only when
+receptive-field churn correlates with treatment. The 2-hop check costs little
+and removes that risk.
 
 \textbf{C5: The same pair can change edge type.}
 \cpart{Naive test.} Represent each item's opted-in neighborhood as the
@@ -460,8 +513,10 @@ test is sound.
 Monday, Alice viewed the Grinder, and on Tuesday she buys it. The set of
 customers touching the Grinder is unchanged, but its purchase count correctly
 rises from 1 to 2. The test sees an unexplained change and blames Bob.
-\cpart{Fix.} Track \emph{typed} edges. Section~\ref{sec:exp} shows that this
-mistake alone produces a 44\% false-positive rate.
+\cpart{Fix.} Track \emph{typed} edges. With untyped invariance, T2's exact
+aggregate check alarms on 46\% of simulated days and 70\% of real days, where
+views often turn into purchases. With typed invariance, it alarms on 0\% and
+0\% (Table~\ref{tab:naive}).
 
 \textbf{C6: The scope of an opt-out must be defined.}
 \cpart{Naive test.} Build the expected $\Ein$ by applying each customer's
@@ -477,7 +532,31 @@ purchase, which is a defensible choice. The naive test, which assumes a
 retroactive policy, flags it as a leak. The opposite assumption produces the
 opposite error.
 \cpart{Fix.} Agree on the opt-out policy before testing, and derive $\Ein$ from
-that definition.
+that definition. On real data with a 7-day window, a retroactive auditor
+checking a prospective pipeline alarms on 90\% of days. With the agreed policy,
+it alarms on 0\% (Table~\ref{tab:naive}). Our simulator keeps no history, so
+C6 does not arise there.
+
+\textbf{C7: Real behavior is dependent and drifts.}
+\cpart{Naive test.} Treat the units of a test (item pairs in T5, edges in T6,
+items in T4) as independent. Take the reference from a single side of the
+current window, such as tomorrow's interactions.
+\cpart{When it works.} In our simulator, customers draw their baskets
+independently from stationary preferences. There, the original T5 and T6
+raise false alarms on 2--4\% of days, close to the nominal 5\%.
+\cpart{When it fails.} Real browsing comes in sessions and drifts over time. A
+customer views several related items in one sitting, so pairs and edges from
+the same customer are correlated. This week's items differ from next week's,
+so tomorrow's interactions are not exchangeable with the current window. On
+RetailRocket, the same tests raise false alarms on 29\% (T5) and
+13\% (T6) of compliant days, and T4 on 17\%.
+\cpart{Fix.} Use the customer as the unit: at most one pair per customer in T5,
+and per-customer paired differences in T6. Bracket the window in time: draw
+the reference from both the interactions that just \emph{left} the window and
+those that \emph{enter} it next. In T6, also exclude same-day items from each
+edge's context, so that session coherence cannot favor suspect edges. With
+these refinements, false alarms fall to 0\% and 0\% on real data
+(Section~\ref{sec:real}).
 
 %=====================================================================
 \section{Audit Tests}\label{sec:tests}
@@ -847,7 +926,12 @@ that also co-occur in $\Eout^t$. Second, overlapping pairs share items and are
 therefore dependent, which makes standard errors too small. We subsample pairs
 so that no item appears twice. We then regress similarity on group membership
 and the two items' log degrees, and test the group coefficient.
-Section~\ref{sec:exp} shows that both details are necessary.
+Section~\ref{sec:exp} shows that both details are necessary. Real data needs
+two further refinements (C7). First, each customer contributes at most one
+pair, because pairs from one browsing session are correlated. Second, the
+placebo brackets the window in time. It combines pairs that co-occur only
+through interactions that \emph{left} the window on day $t$ with pairs that
+co-occur only through interactions that \emph{enter} it on day $t{+}1$.
 
 \paragraph{Avoiding the pitfalls.}
 The placebo absorbs correlated behavior (C1). Both groups are scored with
@@ -931,7 +1015,10 @@ derived from $F$. Features computed from the edge lists, such as an item's
 degree, include the edge itself and so encode the group by construction. With
 them, the learned scorer rejected $H_0$ on 75\% of clean days. With $F$-derived
 features only, it is calibrated, but in our simulator it does not beat the
-cosine score.
+cosine score. On real data, two refinements are needed (C7). The reference
+also includes the customer's edges that just left the window, which brackets
+it in time. Each suspect edge's context also excludes items from the same day,
+so that session coherence cannot favor suspect edges.
 
 \paragraph{Avoiding the pitfalls.}
 OUT and FRESH come from the same customers, so correlated behavior (C1)
@@ -1063,6 +1150,11 @@ would use enough simulated audits to state the probability $1-\beta$ precisely.
 %=====================================================================
 \section{Experiments}\label{sec:exp}
 %=====================================================================
+We evaluate in two settings. In a synthetic simulator we control every part
+of the ground truth. On real interaction data from RetailRocket, behavior is
+realistic, while opt-outs and leaks are simulated.
+
+\subsection{Synthetic setup}\label{sec:synth}
 \paragraph{Simulator.}
 We simulate 3{,}000 customers, 2{,}000 items with intrinsic embeddings
 $x_i\in\mathbb{R}^{16}$ and Zipf popularity (exponent $1.1$), and 100 merchants. Each
@@ -1105,18 +1197,64 @@ of the roughly 2{,}400 organic opted-out edges. A typical day yields
 298 real against 412 placebo item-disjoint pairs for T5, and about 60
 opted-out customers with both suspect and reference edges for T6.
 
+%---------------------------------------------------------------------
+\subsection{Naive tests fail}\label{sec:naive}
+Table~\ref{tab:naive} runs each naive test of Section~\ref{sec:challenges}, and
+its fix, on compliant pipelines, so every alarm is a false alarm. The real-data
+columns use the RetailRocket setup of Section~\ref{sec:real}. For C3 we rotate
+the embedding block by a random orthogonal matrix each day, to emulate
+retraining from a random initialization. All of our tests are invariant to this
+rotation.
+
+\begin{table}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{2.4pt}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+ & & \multicolumn{2}{c}{Naive} & \multicolumn{2}{c}{Fixed} \\
+\cmidrule(lr){3-4}\cmidrule(l){5-6}
+ & Naive test $\rightarrow$ fix & Sim. & Real & Sim. & Real \\
+\midrule
+C1 & opted-out pairs vs.\ random $\rightarrow$ T5 & 100 & 100 & 2 & 0$^\dagger$ \\
+   & \emph{only}-opted-out pairs vs.\ random & 94 & 100 & & \\
+C2 & feature changed $\rightarrow$ T2 & 100 & 100 & 3 & 0 \\
+C3 & raw coordinates $\rightarrow$ aligned & 100 & 100 & 0 & 100$^\ddagger$ \\
+C4 & 1-hop $\rightarrow$ 2-hop invariance & 8 & 0 & 5 & 0 \\
+C5 & untyped $\rightarrow$ typed invariance & 46 & 70 & 0 & 0 \\
+C6 & retroactive auditor $\rightarrow$ agreed policy & -- & 90 & -- & 0 \\
+C7 & basic $\rightarrow$ refined T5 / T6 & 2\,/\,4 & 29\,/\,13 & 7.5\,/\,5 & 0\,/\,0 \\
+\bottomrule
+\end{tabular}
+\caption{False-alarm rate (\% of days, $\alpha=0.05$) of each naive test and its fix on compliant pipelines: 300 simulated and 40 real days (200 and 56--98 for C7). $^\dagger$Refined T5 (C7); the basic T5 alarms on 29\% of real days. $^\ddagger$Alignment removes the rotation (the median relative change falls from 1.40 to 0.014), but sparse real items keep a heavy tail of unstable embeddings, which only T2's control group absorbs (0\%).}
+\label{tab:naive}
+\end{table}
+
+Four findings stand out.
+\begin{itemize}
+  \item C1, C2, C3, C5 and C6 break their naive tests on almost every day, on
+        both data sources, and the fixes restore calibration. The stricter
+        ``only'' filter of C1 barely helps: 94\% and 100\%.
+  \item C4 did not cause false alarms in our pipelines. The 2-hop changes that a
+        1-hop check misses affect treated and control items alike, so they bias
+        T2 only when receptive-field churn correlates with treatment. We keep
+        the 2-hop check because it is cheap and safe.
+  \item On real data, alignment alone does not rescue the coordinate rule of
+        C3. It removes the rotation, but not the noise of sparse items. T2
+        handles both.
+  \item C7 appears only on real data, where the basic T5 and T6 alarm on 29\%
+        and 13\% of compliant days. The refined versions alarm on none.
+\end{itemize}
+
+%---------------------------------------------------------------------
+\subsection{Calibration and power on synthetic data}\label{sec:synthres}
 \paragraph{Calibration.}
 Over 30 clean audits (300 test-days), the per-day rejection rates at $\alpha=0.05$
 are 1\% (T1), 3\% (T2), 0\% (T4), 2\% (T5), 4\% (T6; 6\% with the learned scorer)
 and 0\% (T7). No e-process, individual or averaged, crosses $1/\alpha=20$ in any
 audit.
 
-Several failures along the way are worth reporting, because all of them look
-reasonable.
-First, defining T2's invariance on untyped (customer, item) pairs yields a
-\textbf{44\%} false-positive rate. Resampled customers often re-pick the same item
-with a different type, which legitimately changes typed counts (C5). Second,
-building T5's placebo from only the \emph{new} edges of day $t{+}1$, with
+Beyond the naive tests of Section~\ref{sec:naive}, several design choices that
+look reasonable failed in pilot runs. Building T5's placebo from only the \emph{new} edges of day $t{+}1$, with
 pair-level OLS errors, yields \textbf{18--20\%}. New edges are biased away
 from items a customer already had, and overlapping pairs violate independence.
 T6 repeated both lessons in pilot runs. A learned scorer that also used item
@@ -1205,42 +1343,166 @@ accounts rather than many edges per account. Second, T7's value lies in its
 guaranteed validity, not its power. It checks the passive tests on the real
 pipeline, where their assumptions cannot be verified directly.
 
-%=====================================================================
-\section{Discussion and Related Work}
-%=====================================================================
-\paragraph{Relation to DP auditing.}
-DP auditing inserts canaries and measures distinguishability to lower-bound
-$\varepsilon$~\citep{jagielski2020auditing,nasr2021adversary,steinke2023one}. Our tests can be
-read as auditing a degenerate mechanism that should have $\varepsilon=0$ with respect
-to $\Eout$. Two differences matter. The auditor usually cannot choose the
-inputs, hence the emphasis on \emph{natural} experiments (canaries, invariant
-neighborhoods, status switches, temporal placebos). And the reference
-distribution must be built from correlated behavioral data, not from
-a known mechanism.
+%---------------------------------------------------------------------
+\subsection{Real data: RetailRocket}\label{sec:real}
+\paragraph{Data.}
+We use the public RetailRocket e-commerce event log~\citep{retailrocket}. It
+covers 4.5 months and contains 2.66M views, 69k add-to-carts and 22k
+transactions by 1.4M visitors on 235k items. We drop visitors with fewer than
+2 or more than 200 events. Single events carry no co-interaction, and the
+heaviest visitors are mostly crawlers. That leaves 405{,}832 customers and
+162{,}225 items. The log has no merchant field, so our real-data audits cover
+customers and items only.
 
-\paragraph{Relation to unlearning.}
-Verifying that data was removed from a model is studied under machine
-unlearning~\citep{ginart2019making,bourtoule2021machine}, typically with membership
-inference. Opt-out compliance is a continuous, graph-structured version of that
-problem. Removal applies every day, and the influence of removed data spreads
-through neighbors.
+\paragraph{Semi-synthetic design.}
+The interaction graph is real. Opt-outs and leaks are simulated, because real
+consent labels are not public. The snapshot for day $t$ contains the typed edges
+of the window $[t-6,t]$, one per (customer, item) pair with the strongest event
+type, about 60k edges per day. Intrinsic item embeddings come from an SVD of
+days 0--29, which no audit window includes. Opt-out status, pipelines and leak
+patterns are as in the simulator. Each audit covers 10--14 days, starting on
+day 37.
+
+\begin{table}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+ & Clean & \multicolumn{2}{c}{Aggregation} & \multicolumn{3}{c}{Representation} \\
+\cmidrule(lr){3-4}\cmidrule(l){5-7}
+Test & FPR & .1 & 1.0 & .1 & .1 cust. & 1.0 \\
+\midrule
+T1 & 0 & 100 & 100 & 100 & -- & 100 \\
+T2 & 0 & 100 & 100 & 0 & -- & 100 \\
+T4$^*$ & 17 & 100 & 100 & 0 & -- & 15 \\
+T5 basic$^*$ & 29 & -- & -- & 60 & 85 & 100 \\
+T5 refined & 0 & -- & -- & 0 & 5 & 100 \\
+T6 basic$^*$ & 13 & -- & -- & 10 & 15 & 90 \\
+T6 refined & 0 & -- & -- & 0 & 5 & 100 \\
+\bottomrule
+\end{tabular}
+\caption{RetailRocket, per-day rejection rate (\%). Clean: false-alarm rate on compliant pipelines (42 days for T1, T2 and T4; 98 for basic T5 and T6; 56 for refined). Leak columns give the leak rate $\rho$, with per-edge leakage unless marked ``cust.''; 2 opt-out draws $\times$ 10 days. $^*$Not calibrated on real data, so its power is not meaningful.}
+\label{tab:real}
+\end{table}
+
+\paragraph{Structural tests hold.}
+T1 and T2 raise no false alarm on 42 compliant days (Table~\ref{tab:real}). The
+real long tail supplies about 1{,}900 natural canary items per day, against 34
+in the simulator. As a result, T1 rejects on every day for every leak in our
+grid, including per-edge representation leakage at $\rho=0.1$, where every
+other calibrated test is blind. Its e-process raises an alarm on day 1 for
+aggregation leaks and on day 2 for representation leaks. With 2{,}000
+permutations, a single day's p-value cannot fall below $1/2001$, so one day of
+evidence falls just short of the threshold. More permutations would bring the
+alarm to day 1.
+
+\paragraph{Behavioral tests need the refinements.}
+The basic T4, T5 and T6 rely on exchangeable behavior, and they alarm on 17\%,
+29\% and 13\% of compliant days (C7). The refined T5 and T6 raise no false alarm
+on 56 compliant days. They keep full power at $\rho=1$, but detect little at
+$\rho=0.1$ (0--5\% of days). On synthetic data, the refined T5 alarms on 7.5\% of
+200 compliant days, slightly above the nominal 5\%, and the refined T6 on 5\%.
+There, the refined T6 is more powerful than the basic one under per-customer
+leakage (70\% against 48\% of days at $\rho=0.25$), and the refined T5 is less
+powerful (56\% against 74\%). T4 remains miscalibrated on real data. Items that
+share customers are dependent, and a cluster-robust version is future work. We
+therefore exclude T4 from real-data alarms.
+
+\paragraph{Takeaway.}
+Real behavior separates the tests into two groups. Tests built on structural
+facts, an empty or unchanged receptive field (T1, T2), carry over from the
+simulator unchanged and stay powerful. Tests built on behavioral
+exchangeability (T4, T5, T6) are sound in the simulator but need cluster-aware
+units and time-bracketed references on real data. A null study on real data
+is therefore not optional. It is what revealed C7.
+
+%=====================================================================
+\section{Related Work}\label{sec:related}
+%=====================================================================
+To our knowledge, no prior work audits opt-out compliance of a feature
+pipeline from its inputs and outputs alone. Several lines of work come close,
+and each differs in a way that matters for our setting.
+
+\paragraph{Auditing consent compliance.}
+\citet{liu2024optedout} audit whether advertisers honor opt-outs signaled
+through consent management platforms. They infer data use from advertisers'
+bidding behavior and find that several ad platforms ignore consent. Their
+auditor, like ours, sees only external behavior. The object is different,
+though. They measure whether third parties collect and share data, not how a
+first party's derived features depend on opted-out records. From the legal
+side, \citet{biega2021reviving} analyze purpose limitation in data-driven
+systems and note that black-box methods for auditing such compliance had not
+been developed.
+
+\paragraph{Data-use auditing and membership inference.}
+Membership inference asks whether a record was in a model's training
+set~\citep{shokri2017membership,carlini2022first}. For recommender systems,
+\citet{zhang2021membership} infer whether a user's history was used from the
+recommendations alone. \citet{huang2024general} turn membership inference into
+\emph{proactive} data-use auditing. A data owner publishes one of two marked
+versions of each record and applies a sequential test with a controlled
+false-detection rate. These works audit a single trained model with query
+access, usually for data the auditor itself marked. Our T6 and T7 borrow these
+ideas. The passive tests (T1--T6) instead exploit natural experiments in
+continuously recomputed graph features, where removal must also propagate to
+neighbors and the main obstacle is confounding by correlated behavior
+(Section~\ref{sec:challenges}).
+
+\paragraph{Verifying unlearning.}
+Athena~\citep{sommer2022athena} verifies deletion requests by having some users
+plant backdoors in their data and testing whether the backdoor survives.
+\citet{eisenhofer2025verifiable} require the server to produce cryptographic
+proofs of training and unlearning. \citet{thudi2022necessity} show that the
+model parameters alone cannot certify that a point was unlearned, which echoes
+our Proposition~\ref{prop:imposs}. Unlearning
+methods~\citep{ginart2019making,bourtoule2021machine}, including graph and
+recommendation variants~\citep{chen2022graph,chen2022recommendation}, make
+removal efficient, but they are mechanisms, not audits. Our setting differs in three ways.
+Opt-outs are continuous rather than one-off requests, the auditor has no
+query access to a model, and the influence of removed data spreads through
+the graph.
+
+\paragraph{Privacy auditing.}
+Empirical DP auditing inserts canaries and measures distinguishability to
+lower-bound privacy loss~\citep{jagielski2020auditing,nasr2021adversary,steinke2023one}.
+Our tests can be read as auditing a degenerate mechanism that should have
+$\varepsilon=0$ with respect to $\Eout$. The auditor usually cannot choose the
+inputs, which is why we rely on natural experiments, and the reference
+distribution must be built from correlated behavioral data rather than from a
+known mechanism.
+
+\paragraph{Enforcement inside the system.}
+Industry also enforces consent and purpose limitation from the inside. Meta's
+Policy Zones, for example, attach purpose annotations to data and track
+information flow at runtime across its warehouse and serving
+stacks~\citep{meta2024pai}. Such white-box controls and our black-box audit
+complement each other. Information-flow control prevents violations where it
+is deployed. Output-based auditing checks the result independently, including
+components that the enforcement layer does not cover.
 
 \paragraph{Graph privacy attacks.}
-Link-stealing and GNN membership
-inference~\citep{he2021stealing,olatunji2021membership} show that node outputs reveal edges. T5 and T6 turn
-this attack into audit statistics, with placebo and same-customer references
-that separate memorization from homophily.
+Link stealing and GNN membership
+inference~\citep{he2021stealing,olatunji2021membership} show that node outputs
+reveal edges. T5 and T6 turn these attacks into audit statistics, with
+references that separate memorization from homophily.
 
-\paragraph{Limitations.}
-Simulations cannot establish calibration on real behavioral data. Before
-deployment, every test should first be run on days or slices where compliance
-is known, such as a pipeline replica fed only $\Ein$. Assumption~\ref{ass:local} and the
-exchangeability behind T5's placebo are modeling choices. Seasonality or
-product launches can break them. T7 does not depend on either, which is why we
-recommend periodic canary campaigns wherever write access exists. Daily e-values are not strictly independent. Finally,
-Proposition~\ref{prop:imposs} bounds what any of this can achieve against a
-pipeline that leaks deliberately and sparsely. Code audits, data lineage and
-attested execution remain necessary complements.
+%=====================================================================
+\section{Limitations}\label{sec:limits}
+%=====================================================================
+Our real-data study is semi-synthetic: the interactions are real, but opt-outs
+and leaks are simulated, and RetailRocket has no merchant layer. Real opt-out
+decisions may correlate with behavior. Privacy-conscious customers may browse
+differently, which would add confounding beyond C7. Before deployment, every
+test should first be run on days or slices where compliance is known, such
+as a pipeline replica fed only $\Ein$. That is how we found C7. T4 is not
+calibrated on real data, and the refined T5 is slightly anti-conservative in
+the simulator (7.5\%). Assumption~\ref{ass:local} and the exchangeability behind
+the placebo references are modeling choices that seasonality or product
+launches can break. T7 depends on neither, which is why we recommend periodic
+canary campaigns wherever write access exists. Daily e-values are not strictly
+independent. Finally, Proposition~\ref{prop:imposs} bounds what any of this can
+achieve against a pipeline that leaks deliberately and sparsely. Code audits,
+data lineage and attested execution remain necessary complements.
 
 %=====================================================================
 \section{Conclusion}
@@ -1248,10 +1510,13 @@ attested execution remain necessary complements.
 Opt-out compliance in black-box graph feature pipelines cannot be proven
 from outputs, but it can be falsified efficiently. The most effective
 evidence comes from nodes whose correct output is known in advance: natural
-canaries and invariant neighborhoods. Validity, however, depends on
-details: typed edges, the true receptive field, symmetric placebos and
-dependence between test units. Every audit should begin with a null study, and
-its result should be reported as a calibrated detection bound.
+canaries and invariant neighborhoods. These carry over from synthetic to
+real data unchanged. Validity, however, depends on details: typed edges, an
+agreed opt-out policy, symmetric references, and units that respect how real
+customers browse. Our real-data null study exposed the last of these, which
+the simulator could not. Every audit should therefore begin with a null study
+on real data, and its result should be reported as a calibrated detection
+bound.
 
 \footnotesize
 \begin{thebibliography}{99}
@@ -1265,6 +1530,11 @@ Angrist, J.~D., and Pischke, J.-S. 2009.
 Borisyuk, F.; He, S.; Ouyang, Y.; Ramezani, M.; Du, P.; et~al. 2024.
 \newblock LiGNN: Graph neural networks at LinkedIn.
 \newblock In \emph{KDD}.
+
+\bibitem[Biega and Finck(2021)]{biega2021reviving}
+Biega, A.~J., and Finck, M. 2021.
+\newblock Reviving purpose limitation and data minimisation in data-driven systems.
+\newblock \emph{Technology and Regulation} 2021:44--61.
 
 \bibitem[Bourtoule et~al.(2021)]{bourtoule2021machine}
 Bourtoule, L.; Chandrasekaran, V.; Choquette-Choo, C.~A.; et~al. 2021.
@@ -1281,10 +1551,25 @@ Carlini, N.; Chien, S.; Nasr, M.; Song, S.; Terzis, A.; and Tram{\`e}r, F. 2022.
 \newblock Membership inference attacks from first principles.
 \newblock In \emph{IEEE Symposium on Security and Privacy}.
 
+\bibitem[Chen et~al.(2022a)]{chen2022graph}
+Chen, M.; Zhang, Z.; Wang, T.; Backes, M.; Humbert, M.; and Zhang, Y. 2022a.
+\newblock Graph unlearning.
+\newblock In \emph{ACM CCS}.
+
+\bibitem[Chen et~al.(2022b)]{chen2022recommendation}
+Chen, C.; Sun, F.; Zhang, M.; and Ding, B. 2022b.
+\newblock Recommendation unlearning.
+\newblock In \emph{The Web Conference (WWW)}.
+
 \bibitem[Chernozhukov et~al.(2018)]{chernozhukov2018double}
 Chernozhukov, V.; Chetverikov, D.; Demirer, M.; Duflo, E.; Hansen, C.; Newey, W.; and Robins, J. 2018.
 \newblock Double/debiased machine learning for treatment and structural parameters.
 \newblock \emph{The Econometrics Journal} 21(1).
+
+\bibitem[Eisenhofer et~al.(2025)]{eisenhofer2025verifiable}
+Eisenhofer, T.; Riepel, D.; Chandrasekaran, V.; Ghosh, E.; Ohrimenko, O.; and Papernot, N. 2025.
+\newblock Verifiable and provably secure machine unlearning.
+\newblock In \emph{IEEE SaTML}.
 
 \bibitem[El-Kishky et~al.(2022)]{elkishky2022twhin}
 El-Kishky, A.; Markovich, T.; Park, S.; Verma, C.; Kim, B.; Eskander, R.; Malkov, Y.; Portman, F.; Samaniego, S.; Xiao, Y.; and Haghighi, A. 2022.
@@ -1336,6 +1621,11 @@ He, X.; Deng, K.; Wang, X.; Li, Y.; Zhang, Y.; and Wang, M. 2020.
 \newblock LightGCN: Simplifying and powering graph convolution network for recommendation.
 \newblock In \emph{SIGIR}.
 
+\bibitem[Huang, Gong, and Reiter(2024)]{huang2024general}
+Huang, Z.; Gong, N.~Z.; and Reiter, M.~K. 2024.
+\newblock A general framework for data-use auditing of ML models.
+\newblock In \emph{ACM CCS}.
+
 \bibitem[Jagielski, Ullman, and Oprea(2020)]{jagielski2020auditing}
 Jagielski, M.; Ullman, J.; and Oprea, A. 2020.
 \newblock Auditing differentially private machine learning: How private is private SGD?
@@ -1346,6 +1636,16 @@ Koch, M. 2018.
 \newblock Personalized store feed with vector embeddings.
 \newblock DoorDash Engineering Blog.
 
+\bibitem[Liu, Iqbal, and Saxena(2024)]{liu2024optedout}
+Liu, Z.; Iqbal, U.; and Saxena, N. 2024.
+\newblock Opted out, yet tracked: Are regulations enough to protect your privacy?
+\newblock \emph{Proceedings on Privacy Enhancing Technologies} 2024(1):280--299.
+
+\bibitem[Meta(2024)]{meta2024pai}
+Meta. 2024.
+\newblock Engineering at Meta blog post on Privacy Aware Infrastructure and purpose limitation with Policy Zones.
+\newblock \url{https://engineering.fb.com/2024/08/27/security/privacy-aware-infrastructure-purpose-limitation-meta/}.
+
 \bibitem[Nasr et~al.(2021)]{nasr2021adversary}
 Nasr, M.; Song, S.; Thakurta, A.; Papernot, N.; and Carlini, N. 2021.
 \newblock Adversary instantiation: Lower bounds for differentially private machine learning.
@@ -1355,6 +1655,11 @@ Nasr, M.; Song, S.; Thakurta, A.; Papernot, N.; and Carlini, N. 2021.
 Olatunji, I.~E.; Nejdl, W.; and Khosla, M. 2021.
 \newblock Membership inference attack on graph neural networks.
 \newblock In \emph{IEEE TPS-ISA}.
+
+\bibitem[RetailRocket(2016)]{retailrocket}
+RetailRocket. 2016.
+\newblock Retailrocket recommender system dataset.
+\newblock Kaggle. \url{https://www.kaggle.com/retailrocket/ecommerce-dataset}.
 
 \bibitem[Ramdas et~al.(2023)]{ramdas2023game}
 Ramdas, A.; Gr{\"u}nwald, P.; Vovk, V.; and Shafer, G. 2023.
@@ -1386,6 +1691,11 @@ Shokri, R.; Stronati, M.; Song, C.; and Shmatikov, V. 2017.
 \newblock Membership inference attacks against machine learning models.
 \newblock In \emph{IEEE Symposium on Security and Privacy}.
 
+\bibitem[Sommer et~al.(2022)]{sommer2022athena}
+Sommer, D.~M.; Song, L.; Wagh, S.; and Mittal, P. 2022.
+\newblock Athena: Probabilistic verification of machine unlearning.
+\newblock \emph{Proceedings on Privacy Enhancing Technologies} 2022(3):268--290.
+
 \bibitem[Steinke, Nasr, and Jagielski(2023)]{steinke2023one}
 Steinke, T.; Nasr, M.; and Jagielski, M. 2023.
 \newblock Privacy auditing with one (1) training run.
@@ -1401,6 +1711,11 @@ Alibaba Tianchi. 2018.
 \newblock User behavior data from Taobao for recommendation.
 \newblock \url{https://tianchi.aliyun.com/dataset/649}.
 
+\bibitem[Thudi et~al.(2022)]{thudi2022necessity}
+Thudi, A.; Jia, H.; Shumailov, I.; and Papernot, N. 2022.
+\newblock On the necessity of auditable algorithmic definitions for machine unlearning.
+\newblock In \emph{USENIX Security Symposium}.
+
 \bibitem[Vovk and Wang(2021)]{vovk2021evalues}
 Vovk, V., and Wang, R. 2021.
 \newblock E-values: Calibration, combination and applications.
@@ -1415,6 +1730,11 @@ Wang, J.; Huang, P.; Zhao, H.; Zhang, Z.; Zhao, B.; and Lee, D.~L. 2018.
 Ying, R.; He, R.; Chen, K.; Eksombatchai, P.; Hamilton, W.~L.; and Leskovec, J. 2018.
 \newblock Graph convolutional neural networks for web-scale recommender systems.
 \newblock In \emph{KDD}.
+
+\bibitem[Zhang et~al.(2021)]{zhang2021membership}
+Zhang, M.; Ren, Z.; Wang, Z.; Ren, P.; Chen, Z.; Hu, P.; and Zhang, Y. 2021.
+\newblock Membership inference attacks against recommender systems.
+\newblock In \emph{ACM CCS}.
 
 \bibitem[Zhu et~al.(2019)]{zhu2019aligraph}
 Zhu, R.; Zhao, K.; Yang, H.; Lin, W.; Zhou, C.; Ai, B.; Li, Y.; and Zhou, J. 2019.
