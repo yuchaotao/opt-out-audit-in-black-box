@@ -299,6 +299,10 @@ dashed edges did not exist. For example, the Grinder's purchase count must be
 Kyoto Crafts, whose only sale came from Bob, must look like a merchant with no
 sales.
 
+\edit{The example should also illustrate the intrinsic item embeddings and the computed node features} 
+
+\edit{The setting should also reflect that the same person might opt-in today, opt-out tomorrow, and opt-in again some other day. Also, the graph is evolving, meaning the edges might add, remove, change through days. The node features might or might not use the historical graphs, but it should always respect the current opt-in status; that is, no opt-out edges now and in the past should be used. We should also model the intrinsic features for users, like gender, birth year, residence, language and so on. The modern representation algorithm might encode user intrinsic features into the item embedding via graph as well (Please check the literature; if so, add the analysis to Sec 2 as well.)  }  
+
 \paragraph{Hypothesis.}
 A compliant pipeline satisfies, for some measurable $f_0$,
 \begin{equation}
@@ -319,6 +323,8 @@ parameters (embedding tables, GNN weights, factorization) are fit on data
 containing opted-out edges, even if inference later uses only $\Ein$. The
 second channel is the harder one to detect. It need not change any feature
 near an opted-out edge, so tests confined to local neighborhoods can miss it.
+
+\edit{We should explicitly discuss the aggregation and representation as node features. Move this discussion right after the basic setup. What I meant was that the node features should not contain opt-out edges, and our goal was to detect them. Research the common aggregations and representations used in the industry, list them in a table. In the experiment we should use them as the test targets.} 
 
 \paragraph{What cannot be shown.}
 Could an auditor ever \emph{certify} that a pipeline is compliant? The answer
@@ -378,6 +384,8 @@ counterexample where the same test raises a false alarm on a compliant
 pipeline, and say what fixes it. Table~\ref{tab:challenges} summarizes the seven
 challenges.
 
+\edit{Rewrite this section into two sub-sections: one is about naive test via capturing the single node change, another one is about the difference in difference. Discuss the pitfalls for each case one-by-one (which was formally as challenges), and then discuss the ideas for the fix. } 
+
 \begin{table}[t]
 \centering\footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -423,7 +431,7 @@ of simulated days and 100\% of real days, for four reasons.
         Grinder and the Kettle, and Dan bought the Kettle and the Tea scoop,
         the two items are two hops apart through opted-in edges.
         Factorizations, GNNs and feature propagation all encode such
-        transitive similarity. In our simulator, 99\% of the pairs that pass
+        transitive similarity \edit{cite these methods}. In our simulator, 99\% of the pairs that pass
         the stricter filter are still linked by an opted-in path of length two,
         and these pairs carry all of the residual gap.
   \item \emph{Shared taste and content.} Bob's basket reflects his preferences,
@@ -431,36 +439,39 @@ of simulated days and 100\% of real days, for four reasons.
         that feeds content embeddings into $F$ makes them similar even with no
         opted-in path at all.
   \item \emph{Selection.} The filter removes most pairs that involve popular
-        items. The surviving pairs are niche and sparse, so they differ from
+        items \edit{Why?} . The surviving pairs are niche and sparse, so they differ from
         random pairs in degree and in how noisy their embeddings are.
   \item \emph{Coverage.} The filter says nothing about aggregates, and it inherits
         the weakness that two items are linked only if two edges of the same
-        customer leaked.
+        customer leaked. \edit{What do you mean for this point? what are aggregates here? and looks like you are making an assumption that leakage is at the edge level. I think in the leakage mode we should also discuss user-level opt-out leakage and edge level opt-out leakage, which will make the leak graph different.}
 \end{itemize}
 \cpart{Fix.} A stricter filter on the suspect pairs cannot remove this
 confounding. What works is a reference group with the same structure: the
 same tastes, the same indirect paths and the same sparsity, but no possible
 leak. T5's temporal placebo provides one. Controls computed from $\Ein$ (T4)
-are an alternative.
+are an alternative. \edit{Change to something like: In Sec 5 we will introduce .... Right now you are mentioning T4 and T5 out of nowhere.}
 
 \textbf{C2: The pipeline is random.}
 \cpart{Naive test.} Find items whose opted-out edges changed overnight. If any
 such item's feature also changed, conclude that the pipeline reads opted-out
-edges.
+edges. \edit{Limit it to the case where no opt-in edge changes, otherwise it is too weak.}
 \cpart{When it works.} Suppose the pipeline is deterministic and its review
 count wrongly includes opted-out reviews. Bob reviews the Espresso machine on
 Tuesday, and its review count goes from 0 to 1. The test sees the change and
-correctly flags the leak.
+correctly flags the leak. \edit{Change it to the embedding case. This paper should focus on the embedding case, since simple graph count is easy to verify, also it could be viewed as a simple case of embedding.}
 \cpart{When it fails.} Now take a compliant pipeline that retrains its
 embeddings daily from a fresh random initialization. Even run twice on the same
 input, it gives every item a slightly different embedding, the Espresso machine
-included. The test fires on noise.
+included. The test fires on noise. \edit{It has a easy fix by fixing the random seed. Let's say the counter example is because the opt-in edge change from neighbors can propagate to the local embedding.} 
+\edit{The principal of this test is to capture the single node change from opt-out edges, while C1 is about difference in differences. We should push C2 to be C1, since we should always start the chapter from the simplest idea, then stating the original C1 as C2. Make sure each para title reflects the heuristic. Put the randomness as the final point about when it fails.}
 \cpart{Fix.} Compare against a control group of items whose inputs did not
 change, which measures how much features move for no reason (T2). On
 compliant pipelines, the naive test alarms on 100\% of simulated days and
 100\% of real days, and T2 on 3\% and 0\% (Table~\ref{tab:naive}).
 
 \textbf{C3: Embeddings have no fixed coordinates.}
+
+\edit{Merge it with the single node case.}
 \cpart{Naive test.} For items whose inputs did not change, compare yesterday's
 and today's embeddings coordinate by coordinate, and flag large differences.
 \cpart{When it works.} Suppose retraining is warm-started from yesterday's
@@ -480,6 +491,7 @@ noisy embeddings (C2). T2 therefore aligns \emph{and} compares against a control
 group (Table~\ref{tab:naive}).
 
 \textbf{C4: Features depend on more than immediate neighbors.}
+\edit{Merge it with the single node case. }
 \cpart{Naive test.} Restrict attention to items whose opted-in \emph{direct}
 neighbors are unchanged. Their features should then be unchanged, or move only
 by noise. If they move more when an opted-out edge changes, conclude leakage.
@@ -503,6 +515,8 @@ receptive-field churn correlates with treatment. The 2-hop check costs little
 and removes that risk.
 
 \textbf{C5: The same pair can change edge type.}
+
+\edit{Delete this case. }
 \cpart{Naive test.} Represent each item's opted-in neighborhood as the
 \emph{set of customers} who touched it. If that set is unchanged but a feature
 changed, conclude leakage.
@@ -519,6 +533,9 @@ views often turn into purchases. With typed invariance, it alarms on 0\% and
 0\% (Table~\ref{tab:naive}).
 
 \textbf{C6: The scope of an opt-out must be defined.}
+
+\edit{Delete; Let's make the scope clear in the setting}
+
 \cpart{Naive test.} Build the expected $\Ein$ by applying each customer's
 \emph{current} status to all of their history, then run any of the tests
 above.
@@ -538,6 +555,9 @@ it alarms on 0\% (Table~\ref{tab:naive}). Our simulator keeps no history, so
 C6 does not arise there.
 
 \textbf{C7: Real behavior is dependent and drifts.}
+
+\edit{Merge with the difference in difference case}
+
 \cpart{Naive test.} Treat the units of a test (item pairs in T5, edges in T6,
 items in T4) as independent. Take the reference from a single side of the
 current window, such as tomorrow's interactions.
