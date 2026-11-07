@@ -20,6 +20,9 @@ The pages below are rendered from `main.pdf`. To refresh them after editing, run
 <img src="pages/page-14.png" width="100%" alt="Page 14">
 <img src="pages/page-15.png" width="100%" alt="Page 15">
 <img src="pages/page-16.png" width="100%" alt="Page 16">
+<img src="pages/page-17.png" width="100%" alt="Page 17">
+<img src="pages/page-18.png" width="100%" alt="Page 18">
+<img src="pages/page-19.png" width="100%" alt="Page 19">
 
 ---
 
@@ -53,3 +56,5 @@ python3 analyze.py
 ```
 
 Real data: `data/fetch_retailrocket.sh`, then `sim/run_real_experiments.sh`.
+Feature families and single-node naive tests (synthetic and real): `sim/run_families.sh`, then
+`python3 sim/summarize_families.py Real data: `data/fetch_retailrocket.sh`, then `sim/run_real_experiments.sh`.Real data: `data/fetch_retailrocket.sh`, then `sim/run_real_experiments.sh`. python3 sim/make_family_table.py`.

@@ -92,6 +92,16 @@ def t6b(s_prev, s0, s1, F0):
     for u, i in zip(np.r_[ue, uf].tolist(), np.r_[ie, if_].tolist()):
         if oo[u]:
             ref.setdefault(u, []).append(i)
+    # symmetric conditioning (simulator, where a basket is redrawn as a whole): reference items are
+    # by construction NOT in today's basket, so OUT items are restricted to those NOT in the
+    # customer's previous/next basket. On real data the windows slide by one day, the
+    # neighbouring windows contain almost all of today's basket, and references are bracketed by
+    # day instead, so no restriction is applied.
+    other = {}
+    for s in ((s_prev, s1) if not has_day else ()):
+        for u, i in zip(s["u"].tolist(), s["i"].tolist()):
+            if u in ref:
+                other.setdefault(u, set()).add(i)
 
     def score(i, ctx):
         if not ctx:
@@ -106,6 +116,8 @@ def t6b(s_prev, s0, s1, F0):
             continue
         s_out = []
         for i, d in items:
+            if i in other.get(u, ()):
+                continue
             ctx = [j for j, dj in items if j != i and (not has_day or dj != d)]
             sc = score(i, ctx)
             if sc is not None:

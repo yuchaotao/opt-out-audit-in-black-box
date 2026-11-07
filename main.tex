@@ -53,11 +53,12 @@ $(\Ein^t, \Eout^t, F^t)$: opted-in edges, opted-out edges and produced
 node features. We cast compliance as the conditional-independence hypothesis
 $F \indep \Eout \mid \Ein$, and we note that no black-box procedure can
 certify zero use: it can only detect leakage above a threshold and bound what
-remains. We identify the confounders that make naive tests unsound,
-including the correlation between opted-in and opted-out behavior, pipeline
-stochasticity, rotational non-identifiability of embeddings, and the
-dependence and drift of real behavior. We measure each failure on compliant
-pipelines.
+remains. Naive tests follow two sound ideas, single-node change and
+difference in differences, but fall into five pitfalls: features that read
+beyond a node's own edges, embeddings without fixed coordinates, pipeline
+randomness, the correlation between opted-in and opted-out behavior, and the
+dependence, drift and selection of real reference data. We measure each
+failure on compliant pipelines.
 We then propose six passive tests that exploit the problem's structure:
 natural canaries, zero-difference tests on invariant neighborhoods, opt-out
 status-switch difference-in-differences, residual regression with surrogate
@@ -134,8 +135,9 @@ whether $F^t$ was computed from $\Ein^t$ alone. Our contributions are:
   \item A formulation of opt-out compliance as conditional independence, with
         an explicit limit on what black-box evidence can establish
         (Section~\ref{sec:problem}).
-  \item A catalogue of confounders that invalidate naive tests
-        (Section~\ref{sec:challenges}).
+  \item A catalogue of the pitfalls of naive tests, organized around the two
+        ideas that sound tests build on: single-node change and difference in
+        differences (Section~\ref{sec:challenges}).
   \item Six complementary passive audit tests that target aggregation leakage
         and representation leakage, and an active reference test
         (Section~\ref{sec:tests}).
@@ -143,8 +145,11 @@ whether $F^t$ was computed from $\Ein^t$ alone. Our contributions are:
         reports calibrated leakage bounds instead of an unfalsifiable claim of
         compliance (Section~\ref{sec:stats}).
   \item Experiments on synthetic data and on real e-commerce interactions
-        (RetailRocket). They measure how each naive test fails, and they show
-        which tests carry over to real behavior and which need refinements
+        (RetailRocket). They measure how each naive test fails, test each
+        common family of node features (counts, rates, windowed counts,
+        factorization, co-occurrence embeddings, graph propagation and
+        attribute aggregation) as a separate target, and show which tests carry
+        over to real behavior and which need refinements
         (Section~\ref{sec:exp}).
 \end{enumerate}
 The framing follows empirical auditing of differential
@@ -217,6 +222,24 @@ restaurant's average meal preparation time over the last seven days. It
 publishes them to a feature store that is shared across teams and recomputed
 daily~\citep{hermann2017michelangelo}.
 
+\paragraph{Customer attributes flow into item features.}
+Industrial recommenders also use what customers \emph{are}, not only what they
+do. YouTube's candidate generator feeds gender, age and geographic region into
+the user tower~\citep{covington2016deep}. Wide~\&~Deep uses a user's country,
+language and demographics~\citep{cheng2016wide}. Graph models pass such
+attributes to items. GraphSAGE computes a node's embedding by aggregating the
+features of its neighbors~\citep{hamilton2017graphsage}, and Uber Eats applies
+it to user--dish graphs with per-type node features~\citep{sarda2019ubereats}.
+A$^2$-GCN builds an item's representation from messages sent by the users who
+interacted with it and by its attributes~\citep{liu2022a2gcn}. Jointly trained
+two-tower models do the same through gradients: the item tower is fit to
+match user vectors that encode demographics~\citep{yi2019sampling}. The
+consequence for consent is direct. If an opted-out customer's edges leak into
+such a pipeline, the item embeddings absorb not only \emph{that} she bought an
+item but also \emph{who} she is, such as her age group or region. Our audit
+must therefore cover features that aggregate customer attributes, not only
+features built from edges.
+
 \paragraph{Implications for auditing.}
 Three consequences follow. First, one embedding table or aggregate feeds many
 downstream models, so a single filtering bug spreads widely. The feature
@@ -240,16 +263,87 @@ in three ways, and none of them breaks it:
 %=====================================================================
 \section{Problem Formulation}\label{sec:problem}
 %=====================================================================
-\paragraph{Setup.}
-On day $t$, let $G^t$ be a typed bipartite graph between customers $\mathcal{U}$
-and items $\mathcal{I}$, plus a static item--merchant map $m:\mathcal{I}\to\mathcal{M}$
-and intrinsic item embeddings $x_i\in\mathbb{R}^d$. Each customer $u$ has an
-opt-out status $o_u^t\in\{0,1\}$. The edges split into
-$\Ein^t=\{(u,i,\tau): o_u^t=0\}$ and $\Eout^t=\{(u,i,\tau): o_u^t=1\}$, where $\tau$
-is the interaction type. A fixed pipeline $f$ maps its input to node features
-$F^t=\{F_v^t\}_{v\in\mathcal{U}\cup\mathcal{I}\cup\mathcal{M}}$. The auditor observes
-$\mathcal{D}_T=\{(\Ein^t,\Eout^t,F^t)\}_{t=1}^{T}$ but neither $f$ nor its internal
-randomness $\xi^t$.
+\paragraph{Graph and attributes.}
+Customers $\mathcal{U}$, items $\mathcal{I}$ and merchants $\mathcal{M}$ form a
+typed graph that changes every day. Each customer $u$ has intrinsic attributes
+$z_u$, such as gender, birth year, residence and language. Each item $i$ has an
+intrinsic embedding $x_i\in\mathbb{R}^d$, computed from its title, images or
+category, and a merchant $m(i)$. An interaction is a typed edge $(u,i,\tau)$, where
+$\tau$ is a view, add-to-cart, purchase or review. Let $G^t$ be the set of
+interactions that exist on day $t$, including past ones the platform still
+stores. The graph evolves: edges are added (a new purchase), removed (an
+emptied cart, a deleted review, a retention window that expires) and change
+type (a view becomes a purchase).
+
+\paragraph{Consent and its scope.}
+Each customer has an opt-out status $o_u^t\in\{0,1\}$, which can change on any
+day. The same person may opt in on Monday, opt out on Tuesday and opt back in
+on Friday. We adopt the scope that platforms usually promise: the
+\emph{current} status governs the customer's \emph{whole} history. On day $t$,
+\begin{equation}
+  \Eout^t=\{(u,i,\tau)\in G^t: o_u^t=1\},\qquad \Ein^t=G^t\setminus\Eout^t,
+  \label{eq:scope}
+\end{equation}
+so an opt-out withdraws every past interaction from processing from that day
+on, and opting back in restores them. A pipeline may use any amount of
+history, such as a 7-day window, 30-day decayed counts or a model trained on a
+year of data. Whatever it uses, on day $t$ it must not use any interaction of a
+customer who is opted out \emph{on day $t$}, even one made while she was opted
+in. A prospective scope, which keeps interactions made before the opt-out, is
+also defensible. It changes the split in~\eqref{eq:scope}, and the auditor must
+agree on the scope with the pipeline owner before testing: on RetailRocket,
+an auditor who assumes the retroactive scope while the pipeline follows the
+prospective one sees violations on 90\% of days (Section~\ref{sec:naive}).
+
+\paragraph{Pipeline and observations.}
+A fixed pipeline $f$ maps its input to node features
+$F^t=\{F_v^t\}_{v\in\mathcal{U}\cup\mathcal{I}\cup\mathcal{M}}$. The auditor is
+typically the platform's privacy team. It observes
+$\mathcal{D}_T=\{(\Ein^t,\Eout^t,F^t)\}_{t=1}^{T}$ together with $x$ and $z$, but
+neither $f$ nor its internal randomness $\xi^t$.
+
+\paragraph{Node features: aggregations and representations.}
+Table~\ref{tab:families} lists the node features that industrial pipelines
+compute, grouped into two families. \emph{Aggregations} summarize a node's own
+interactions: counts, rates and averages, often over a time window. Each value
+is a fixed function of the node's typed edges. \emph{Representations} are
+learned vectors. Matrix factorization~\citep{koren2009matrix} and skip-gram
+embeddings such as item2vec~\citep{barkan2016item2vec,grbovic2018real} are fit
+on the whole interaction or co-occurrence matrix; skip-gram with negative
+sampling implicitly factorizes a shifted pointwise mutual information
+(PMI) matrix~\citep{levy2014neural}. Graph neural networks such as
+GraphSAGE~\citep{hamilton2017graphsage}, PinSage~\citep{ying2018graph} and
+LightGCN~\citep{he2020lightgcn} propagate information over $k$ hops.
+Attribute-aware models also aggregate the attributes $z$ of the customers
+around an item (Section~\ref{sec:practice}). Whatever the family, a compliant
+feature contains no information from $\Eout^t$. Our goal is to detect features
+that do. In Section~\ref{sec:families}, one representative of each row
+(A1--A3, R1--R4) serves as a test target.
+
+\begin{table*}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}>{\raggedright}p{0.25in}>{\raggedright}p{1.35in}>{\raggedright}p{1.9in}>{\raggedright}p{1.45in}>{\raggedright\arraybackslash}p{1.6in}@{}}
+\toprule
+& Feature & Item-level example & Used by & What a compliant value depends on \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Aggregations}}\\
+A1 & interaction counts & views, carts, purchases; unique customers & feature stores~\citep{hermann2017michelangelo} & own typed opted-in edges (1 hop) \\
+A2 & rates and averages & conversion rate, mean rating, mean interaction type & feature stores~\citep{hermann2017michelangelo} & own typed opted-in edges (1 hop) \\
+A3 & time-windowed counts & 7-day or exponentially decayed counts & feature stores~\citep{hermann2017michelangelo} & own opted-in edges and their dates \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Representations}}\\
+R1 & matrix factorization & item factors of the customer--item matrix & \citet{koren2009matrix} & all of $\Ein$ (global) \\
+R2 & co-occurrence embeddings & item2vec, session skip-gram; $\approx$ PMI factorization & Airbnb, Taobao~\citep{grbovic2018real,wang2018billion,levy2014neural} & all opted-in co-occurrences (global) \\
+R3 & graph propagation & LightGCN, PinSage, GraphSAGE & \citet{he2020lightgcn,ying2018graph,hamilton2017graphsage} & $k$-hop opted-in neighborhood and trained weights \\
+R4 & attribute aggregation & mean attributes $z$ of an item's customers & Uber Eats, A$^2$-GCN~\citep{sarda2019ubereats,liu2022a2gcn} & attributes of opted-in neighbors (1 hop) \\
+R5 & heterogeneous embeddings & TwHIN, random-walk embeddings & \citet{elkishky2022twhin,grover2016node2vec} & all of $\Ein$ (global); not evaluated \\
+\bottomrule
+\end{tabular}
+\caption{Node features computed by industrial pipelines. Each row is a target for the audit; in Section~\ref{sec:families} we implement A1--A3 and R1--R4 and test each one separately. Customer and merchant features are built the same way from the other side of the graph.}
+\label{tab:families}
+\end{table*}
 
 \begin{figure}[t]
 \centering
@@ -257,21 +351,26 @@ randomness $\xi^t$.
   every node/.style={font=\scriptsize},
   cust/.style={draw, circle, minimum size=7mm, inner sep=0pt, fill=white},
   optout/.style={cust, fill=gray!25, dashed},
-  item/.style={draw, rounded corners=2pt, minimum width=15mm, minimum height=5mm, fill=white},
+  item/.style={draw, rounded corners=2pt, minimum width=15mm, minimum height=7mm, fill=white, align=center, inner sep=1pt},
   merch/.style={draw, minimum width=14mm, minimum height=6mm, fill=gray!8},
   ein/.style={thick},
   eout/.style={thick, dashed, red!70!black},
   own/.style={gray, thin},
-  lab/.style={font=\tiny, fill=white, inner sep=0.5pt}
+  lab/.style={font=\tiny, fill=white, inner sep=0.5pt},
+  attr/.style={font=\tiny, anchor=east, text=gray!50!black}
 ]
 \node[cust] (A) at (0,3.3) {Alice};
 \node[optout] (B) at (0,2.2) {Bob};
 \node[cust] (C) at (0,1.1) {Carol};
 \node[cust] (D) at (0,0) {Dan};
-\node[item] (E) at (2.6,3.3) {Espresso};
-\node[item] (G) at (2.6,2.2) {Grinder};
-\node[item] (K) at (2.6,1.1) {Kettle};
-\node[item] (S) at (2.6,0) {Tea scoop};
+\node[attr] at (-0.4,3.3) {b.\,1990};
+\node[attr] at (-0.4,2.2) {b.\,1970};
+\node[attr] at (-0.4,1.1) {b.\,1985};
+\node[attr] at (-0.4,0) {b.\,2000};
+\node[item] (E) at (2.6,3.3) {Espresso\\[-2pt]{\tiny $x{=}(1,0)$}};
+\node[item] (G) at (2.6,2.2) {Grinder\\[-2pt]{\tiny $x{=}(1,1)$}};
+\node[item] (K) at (2.6,1.1) {Kettle\\[-2pt]{\tiny $x{=}(0,1)$}};
+\node[item] (S) at (2.6,0) {Tea scoop\\[-2pt]{\tiny $x{=}({-}1,1)$}};
 \node[merch] (M1) at (5,2.2) {BrewCo};
 \node[merch] (M2) at (5,0) {Kyoto Crafts};
 \draw[ein]  (A) -- node[lab, pos=0.35]{buy} (E);
@@ -286,45 +385,90 @@ randomness $\xi^t$.
 \draw[own] (S) -- (M2);
 \node[font=\tiny, align=left, anchor=west] at (3.9,3.45) {solid: $\Ein$ \quad dashed: $\Eout$\\ shaded: opted out};
 \end{tikzpicture}
-\caption{Running example on Monday. Bob has opted out, so his three purchases form $\Eout$. The Tea scoop, and with it Kyoto Crafts, was bought only by Bob. Dan will opt out on Tuesday.}
+\caption{Running example on Monday. Customers carry an attribute (birth year) and items an intrinsic embedding $x$. Bob has opted out, so his three purchases form $\Eout$. The Tea scoop, and with it Kyoto Crafts, was bought only by Bob. Dan will opt out on Tuesday and opt back in on Friday.}
 \label{fig:running}
 \end{figure}
 
+\begin{table}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llcc@{}}
+\toprule
+& Feature & Compliant & Bob leaks \\
+\midrule
+A1 & Grinder purchases & 1 & 2 \\
+A1 & Kyoto Crafts sales & 0 & 1 \\
+R4 & Grinder, mean birth year & 1987.5 & 1981.7 \\
+\midrule
+R3 & Espresso embedding & $(1,\,0.5)$ & $(0.5,\,0.5)$ \\
+R3 & Grinder embedding & $(0.75,\,0.75)$ & $(0.5,\,0.83)$ \\
+R3 & Kettle embedding & $(0.5,\,1)$ & $(0.5,\,1)$ \\
+R3 & Tea scoop embedding & $({-}0.5,\,0.5)$ & $(0,\,0.75)$ \\
+\bottomrule
+\end{tabular}
+\caption{Node features of Figure~\ref{fig:running}. The embedding is $F_i=\tfrac12 x_i+\tfrac12\,\mathrm{mean}\{x_j: j\text{ co-interacted with } i\}$, with the mean of an empty set taken as $0$. ``Bob leaks'' computes the same features with Bob's edges included.}
+\label{tab:running}
+\end{table}
+
 \paragraph{Running example.}
 Figure~\ref{fig:running} shows a toy marketplace that we reuse throughout the
-paper. Alice, Carol and Dan are opted in, and Bob is opted out. A compliant
-pipeline must produce exactly the features it would produce if Bob's three
-dashed edges did not exist. For example, the Grinder's purchase count must be
-1 (Carol), not 2. The Tea scoop must look like an item nobody has bought.
-Kyoto Crafts, whose only sale came from Bob, must look like a merchant with no
-sales.
-
-\edit{The example should also illustrate the intrinsic item embeddings and the computed node features} 
-
-\edit{The setting should also reflect that the same person might opt-in today, opt-out tomorrow, and opt-in again some other day. Also, the graph is evolving, meaning the edges might add, remove, change through days. The node features might or might not use the historical graphs, but it should always respect the current opt-in status; that is, no opt-out edges now and in the past should be used. We should also model the intrinsic features for users, like gender, birth year, residence, language and so on. The modern representation algorithm might encode user intrinsic features into the item embedding via graph as well (Please check the literature; if so, add the analysis to Sec 2 as well.)  }  
+paper, and Table~\ref{tab:running} computes three features on it. Alice, Carol
+and Dan are opted in, and Bob is opted out. A compliant pipeline must produce
+exactly the features it would produce if Bob's three dashed edges did not
+exist. The Grinder's purchase count must be 1 (Carol), not 2, and its mean
+customer birth year must not reflect Bob's 1970. Kyoto Crafts, whose only sale
+came from Bob, must look like a merchant with no sales. The embedding is a
+one-layer propagation: half the item's own $x$, half the mean $x$ of the items
+that share a customer with it. Compliant, the Tea scoop has no opted-in
+neighbor, so its embedding is the cold-item default $\tfrac12 x$. If Bob's
+edges leak, the Tea scoop moves toward the Espresso machine and the Grinder,
+and those two move toward the Tea scoop. The Kettle, which Bob never touched,
+is unaffected. When Dan opts out on Tuesday, his Monday purchase of the
+Kettle leaves $\Ein$ by~\eqref{eq:scope}. The Kettle's compliant purchase count
+drops from 2 to 1 on Tuesday and returns to 2 on Friday.
 
 \paragraph{Hypothesis.}
 A compliant pipeline satisfies, for some measurable $f_0$,
 \begin{equation}
-  H_0:\; F^t = f_0(\Ein^t, x, \xi^t) \quad \forall t,
+  H_0:\; F^t = f_0(\Ein^t, x, z, \xi^t) \quad \forall t,
   \label{eq:h0}
 \end{equation}
 with $\xi^t$ independent of $\Eout^t$ given $\Ein^t$. Equivalently,
-$F^t \indep \Eout^t \mid \Ein^t, x$. The alternative is that $F^t$ depends on
-$\Eout^t$ through some channel. Note that this is a \emph{conditional} statement:
-$F$ and $\Eout$ are marginally dependent even under $H_0$, because opted-in and
+$F^t \indep \Eout^t \mid \Ein^t, x, z$. Every family in
+Table~\ref{tab:families} reads attributes only through edges, so under $H_0$
+the attributes of an opted-out customer reach no feature. The alternative is that $F^t$ depends on $\Eout^t$
+through some channel. Note that this is a \emph{conditional} statement: $F$ and
+$\Eout$ are marginally dependent even under $H_0$, because opted-in and
 opted-out customers draw from the same preference distribution.
 
 \paragraph{Leakage modes.}
-We distinguish two channels:
+A leak has a \emph{channel} and a \emph{pattern}. The channel is
 \emph{aggregation leakage}, where counts, pooling or message passing include
-some opted-out edges; and \emph{representation leakage}, where trained
-parameters (embedding tables, GNN weights, factorization) are fit on data
-containing opted-out edges, even if inference later uses only $\Ein$. The
-second channel is the harder one to detect. It need not change any feature
-near an opted-out edge, so tests confined to local neighborhoods can miss it.
-
-\edit{We should explicitly discuss the aggregation and representation as node features. Move this discussion right after the basic setup. What I meant was that the node features should not contain opt-out edges, and our goal was to detect them. Research the common aggregations and representations used in the industry, list them in a table. In the experiment we should use them as the test targets.} 
+some opted-out edges, or \emph{representation leakage}, where trained
+parameters (embedding tables, GNN weights, factorizations) are fit on data
+containing opted-out edges, even if inference later uses only $\Ein$.
+Representation leakage is the harder one to detect: it need not change any
+feature near an opted-out edge. Either channel leaks attributes along with
+edges when the feature aggregates $z$ (R4). The pattern says which opted-out
+edges leak, and it determines the \emph{leak graph}:
+\begin{itemize}
+  \item \emph{Per-customer leakage.} A fraction $\rho$ of opted-out customers
+        leak with all of their edges, for example because one shard of the
+        consent table is stale, or a status change never reached the
+        pipeline. Each leaked customer contributes a whole basket, so every
+        pair of her items is coupled. In Figure~\ref{fig:running}, the
+        Espresso machine, the Grinder and the Tea scoop all become linked.
+  \item \emph{Per-edge leakage.} Each opted-out edge leaks independently with
+        probability $\rho$, for example because the consent filter runs at the
+        event level and late-arriving or retried events bypass it. A pair of
+        items is coupled only if \emph{both} of the customer's edges leak,
+        which happens with probability $\rho^2$. If only Bob's Grinder
+        purchase leaks, the Grinder's count rises, but no pair of items is
+        linked through Bob.
+\end{itemize}
+The two patterns produce the same aggregation leaks per edge, but very
+different leak graphs, and therefore different power for tests that look at
+pairs (Section~\ref{sec:did}).
 
 \paragraph{What cannot be shown.}
 Could an auditor ever \emph{certify} that a pipeline is compliant? The answer
@@ -374,209 +518,199 @@ at least $\varepsilon$ would have been detected with probability at least
 $1-\beta$; none was.''
 
 %=====================================================================
-\section{Why Naive Tests Fail}\label{sec:challenges}
+\section{Naive Tests and Their Pitfalls}\label{sec:challenges}
 %=====================================================================
-Each challenge below starts from a natural \emph{naive test} that an auditor
-might write first. Section~\ref{sec:naive} measures every one of these failures
-on compliant pipelines, both in our simulator and on real data. For each one, we give a positive example where the test
-works, catching a real leak in Figure~\ref{fig:running}. We then give a
-counterexample where the same test raises a false alarm on a compliant
-pipeline, and say what fixes it. Table~\ref{tab:challenges} summarizes the seven
-challenges.
-
-\edit{Rewrite this section into two sub-sections: one is about naive test via capturing the single node change, another one is about the difference in difference. Discuss the pitfalls for each case one-by-one (which was formally as challenges), and then discuss the ideas for the fix. } 
+An auditor's first tests follow two simple ideas. The first looks at a single
+node: if only its opted-out edges changed, its feature should not change
+(Section~\ref{sec:single}). The second compares groups: items that opted-out
+customers connect should look no different from a reference group
+(Section~\ref{sec:did}). Both ideas are sound, and Section~\ref{sec:tests}
+builds on both. Their naive versions, however, fall into five pitfalls, each a
+heuristic that sounds right but is false for real pipelines. For each, we give
+a positive example where the naive test catches a real leak in
+Figure~\ref{fig:running}, a counterexample where it raises a false alarm on a
+compliant pipeline, and the false-alarm rate we measure on compliant
+pipelines, in our simulator and on real data (Section~\ref{sec:naive}).
+Table~\ref{tab:challenges} summarizes them. We focus on representations:
+aggregations are the easy case, and the single-node test is exact for them.
 
 \begin{table}[t]
 \centering\footnotesize
 \setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}lll@{}}
+\begin{tabular}{@{}l>{\raggedright}p{1.55in}>{\raggedright\arraybackslash}p{0.95in}@{}}
 \toprule
-Challenge & Naive test & Fix \\
+& Heuristic (false in general) & Fix \\
 \midrule
-C1 correlation & opted-out pairs close & $\Ein$ controls, placebo \\
-C2 stochasticity & feature changed & noise-floor control group \\
-C3 rotation & coordinates changed & alignment, invariants \\
-C4 receptive field & 1-hop invariance & $k$-hop invariance \\
-C5 edge identity & untyped invariance & typed edges \\
-C6 opt-out scope & current status on history & fix policy first \\
-C7 dependence, drift & i.i.d.\ units & customer units \\
+\multicolumn{3}{@{}l}{\emph{Single node} (Section~\ref{sec:single})}\\
+P1 & unchanged opted-in edges $\Rightarrow$ unchanged feature & $k$-hop invariance, control group \\
+P2 & unchanged embedding $\Rightarrow$ unchanged coordinates & alignment \\
+P3 & same input $\Rightarrow$ same output & fixed seed, control group \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Difference in differences} (Section~\ref{sec:did})}\\
+P4 & opted-out pairs are no closer than random pairs & placebo with the same structure \\
+P5 & tomorrow's interactions are a fair, independent reference & customer units, bracketing \\
 \bottomrule
 \end{tabular}
-\caption{Seven naive tests, the challenge that breaks each one, and the fix used in Section~\ref{sec:tests}. Table~\ref{tab:naive} measures each failure.}
+\caption{Five heuristics behind naive tests, and the fixes used in Section~\ref{sec:tests}. Table~\ref{tab:naive} measures each failure.}
 \label{tab:challenges}
 \end{table}
 
-\textbf{C1: Opted-in and opted-out behavior are correlated.}
-\cpart{Naive test.} Take every pair of items co-purchased by an opted-out
-customer. Check whether these pairs are closer in feature space than random
-item pairs. If so, conclude that opted-out baskets shaped the features.
-\cpart{When it works.} Suppose the pipeline trains its embeddings on all edges,
-including Bob's. Bob is the only link between the Grinder and the Tea scoop, so
-training pulls them together. The test finds them unusually close and
-correctly flags the leak.
-\cpart{When it fails.} Now take a compliant pipeline. Alice bought the Espresso
-machine and viewed the Grinder, so the pipeline places these two items close
-together using her edges alone. Bob also bought both, so the pair counts as
-an opted-out co-purchase, and the test fires anyway. On compliant pipelines,
-this naive test raises a false alarm on 100\% of days in our simulator and
-on 100\% on real data (Table~\ref{tab:naive}).
-\cpart{A stricter version.} Keep only pairs that \emph{only} opted-out customers
-co-purchased, so that no opted-in customer bought both items. This removes the
-Espresso machine--Grinder pair, and every other pair whose similarity a direct
-opted-in co-purchase explains. It still fails, with false alarms on 94\%
-of simulated days and 100\% of real days, for four reasons.
+\subsection{Single-node tests}\label{sec:single}
+\paragraph{The idea.}
+Under $H_0$, a node's feature is a function of opted-in data only. If nothing
+opted in changed around a node and only its opted-out edges changed, a
+compliant pipeline has no reason to change its feature. A change is then
+evidence that the pipeline read the opted-out edges.
+
+\paragraph{The naive test.}
+Each night, find items whose typed opted-in edges are identical on days $t$
+and $t{+}1$ but whose opted-out edges changed. Flag a leak if any of these
+items' embeddings changed. Restricting to items with no opted-in change is
+essential: without it, legitimate changes would trigger the test every day.
+
+\paragraph{When it works.}
+Take the embedding of Table~\ref{tab:running}, computed deterministically.
+On Tuesday, Bob buys the Kettle. Carol's and Dan's edges with the Kettle are
+unchanged, so the Kettle qualifies. A compliant pipeline ignores Bob's new
+edge, and the Kettle stays at $(0.5,\,1)$. A leaking pipeline adds Bob's other
+items to the Kettle's neighbors and moves it toward the Espresso machine, the
+Grinder and the Tea scoop. The test sees the change and correctly flags the
+leak. For aggregations (A1, A2), the test is exact and always valid: a count
+over an item's own opted-in edges cannot change if those edges did not.
+
+\paragraph{Pitfall 1: ``Unchanged opted-in edges mean an unchanged feature.''}
+This holds only for features that read nothing beyond the node's own edges.
+An embedding also reads its neighbors' edges. On Tuesday, Carol also buys a
+teapot. The Kettle's own opted-in edges are unchanged, but Carol now connects
+it to the teapot, so its propagated embedding legitimately moves. Since Bob
+touched the Kettle the same day, the test blames him. For a $k$-layer GNN,
+everything within $k$ hops matters; for a factorization fit on the whole
+graph (R1, R2), every edge does. In our simulator, the deterministic
+one-layer propagation alarms on 28\% of compliant days with the naive 1-hop
+check, and on 0\% when invariance is checked over 2 hops; on real data, where
+neighbors' baskets change constantly, on 100\% and 0\% (Table~\ref{tab:naive}).
+
+\paragraph{Pitfall 2: ``An unchanged embedding means unchanged coordinates.''}
+Embeddings that are retrained each day have no fixed coordinates. Suppose
+Tuesday's factorization produces exactly Monday's geometry, but rotated. All
+distances and angles are unchanged, yet every coordinate of every item
+differs, and the test flags the entire catalog. Aligning the two days'
+spaces, e.g., with orthogonal Procrustes~\citep{schonemann1966procrustes}, or
+comparing only rotation-invariant quantities, such as norms and cosine
+similarities, removes this. On randomly retrained factorizations, alignment
+cuts the median relative change of input-unchanged items from 1.40 to 0.014.
+
+\paragraph{Pitfall 3: ``The same input gives the same output.''}
+Many pipelines are random: they initialize from a fresh seed, sample
+negatives or mini-batches, or run a randomized SVD. Even run twice on the same
+input, they give every item a slightly different embedding, and the test
+fires on noise. This pitfall has an easy fix when the operator controls the
+pipeline: fix the random seed in the audited run. Fixing the seed is not
+enough on its own, however. A factorization (R1) with a fixed seed still
+alarms on 100\% of simulated and real days, before and after alignment, because the
+global fit moves with every opted-in change anywhere in the graph
+(Pitfall~1 again).
+
+\paragraph{Ideas for the fix.}
+Pitfalls 1--3 share one remedy. Instead of asking whether a feature changed,
+ask whether it changed \emph{more} than the features of comparable nodes whose
+opted-out edges did not change. Select items whose opted-in input is
+unchanged over the pipeline's receptive field ($k$ hops), align the two days,
+and compare these treated items with control items. Global retraining, noise
+and rotation then move both groups alike. In Section~\ref{sec:tests} we turn
+this into T2. On randomly retrained factorizations it alarms on 6\% of
+simulated and 7\% of real days at $\alpha=0.05$, against 100\% for the naive
+test.
+
+\subsection{Difference in differences}\label{sec:did}
+\paragraph{The idea.}
+A representation leak need not change any single node visibly, but it changes
+\emph{relations}: training on an opted-out customer's basket pulls her items
+together. So compare the items that opted-out customers connect with a
+reference group. The difference between the two groups, relative to the
+difference expected without a leak, measures the leak.
+
+\paragraph{The naive test.}
+Take every pair of items co-purchased by an opted-out customer, and check
+whether these pairs are closer in feature space than random item pairs.
+
+\paragraph{When it works.}
+Suppose the pipeline trains on all edges, including Bob's. Bob is the only
+link between the Grinder and the Tea scoop. In Table~\ref{tab:running}, the
+leak moves the Tea scoop from $({-}0.5,\,0.5)$ to $(0,\,0.75)$, and its cosine
+similarity with the Grinder rises from 0 to 0.86. The test finds the pair
+unusually close and correctly flags the leak.
+
+\paragraph{Pitfall 4: ``Pairs co-purchased by opted-out customers should be no closer than random pairs.''}
+This fails because opted-in and opted-out behavior are correlated. Alice
+bought the Espresso machine and viewed the Grinder, so a compliant pipeline
+places the two close together using her edges alone. Bob also bought both, so
+the pair counts as an opted-out co-purchase, and the test fires anyway. On
+compliant pipelines, the naive test alarms on 100\% of days, in our simulator
+and on real data (Table~\ref{tab:naive}). A stricter version keeps only pairs
+that \emph{only} opted-out customers co-purchased, so that no opted-in
+customer bought both items. This removes the Espresso machine--Grinder pair.
+It still alarms on 94\% of simulated and 100\% of real days, for four reasons.
 \begin{itemize}
-  \item \emph{Indirect opted-in paths.} The Grinder and the Tea scoop were never
-        bought together by an opted-in customer. But if Carol bought the
-        Grinder and the Kettle, and Dan bought the Kettle and the Tea scoop,
-        the two items are two hops apart through opted-in edges.
-        Factorizations, GNNs and feature propagation all encode such
-        transitive similarity \edit{cite these methods}. In our simulator, 99\% of the pairs that pass
-        the stricter filter are still linked by an opted-in path of length two,
-        and these pairs carry all of the residual gap.
-  \item \emph{Shared taste and content.} Bob's basket reflects his preferences,
-        so its items are related in their intrinsic features. A pipeline
-        that feeds content embeddings into $F$ makes them similar even with no
+  \item \emph{Indirect opted-in paths.} The Grinder and the Tea scoop were
+        never bought together by an opted-in customer. But if Dan also bought
+        the Tea scoop, the two would be linked through Carol and Dan:
+        Grinder--Carol--Kettle--Dan--Tea scoop. Matrix
+        factorization~\citep{koren2009matrix}, skip-gram
+        embeddings~\citep{barkan2016item2vec,levy2014neural}, GNNs and feature
+        propagation~\citep{hamilton2017graphsage,he2020lightgcn} all encode
+        such transitive similarity. In our simulator, 99\% of the pairs that
+        pass the stricter filter are still linked by a short opted-in path, and
+        these pairs carry all of the residual gap.
+  \item \emph{Shared taste and content.} Bob's basket reflects his
+        preferences, so its items are related in their intrinsic embeddings
+        $x$. A pipeline that feeds $x$ into $F$ makes them similar even with no
         opted-in path at all.
-  \item \emph{Selection.} The filter removes most pairs that involve popular
-        items \edit{Why?} . The surviving pairs are niche and sparse, so they differ from
-        random pairs in degree and in how noisy their embeddings are.
-  \item \emph{Coverage.} The filter says nothing about aggregates, and it inherits
-        the weakness that two items are linked only if two edges of the same
-        customer leaked. \edit{What do you mean for this point? what are aggregates here? and looks like you are making an assumption that leakage is at the edge level. I think in the leakage mode we should also discuss user-level opt-out leakage and edge level opt-out leakage, which will make the leak graph different.}
+  \item \emph{Selection.} A popular item is bought by many opted-in
+        customers, so for almost any pair that contains it, some opted-in
+        customer bought both items. The filter therefore removes nearly every
+        pair that involves a popular item. The surviving pairs consist of
+        niche items, which differ from random pairs in degree and in how noisy
+        their embeddings are.
+  \item \emph{Coverage.} The test only sees leaks that couple two items. It is
+        blind to aggregation leaks, such as an inflated purchase count, which
+        change no pairwise similarity. Its power also depends on the leak
+        pattern: under per-customer leakage each leaked customer couples all
+        of her pairs, so the signal grows with $\rho$; under per-edge leakage a
+        pair is coupled only if both of its edges leak, so the signal grows
+        with $\rho^2$.
 \end{itemize}
-\cpart{Fix.} A stricter filter on the suspect pairs cannot remove this
-confounding. What works is a reference group with the same structure: the
-same tastes, the same indirect paths and the same sparsity, but no possible
-leak. T5's temporal placebo provides one. Controls computed from $\Ein$ (T4)
-are an alternative. \edit{Change to something like: In Sec 5 we will introduce .... Right now you are mentioning T4 and T5 out of nowhere.}
 
-\textbf{C2: The pipeline is random.}
-\cpart{Naive test.} Find items whose opted-out edges changed overnight. If any
-such item's feature also changed, conclude that the pipeline reads opted-out
-edges. \edit{Limit it to the case where no opt-in edge changes, otherwise it is too weak.}
-\cpart{When it works.} Suppose the pipeline is deterministic and its review
-count wrongly includes opted-out reviews. Bob reviews the Espresso machine on
-Tuesday, and its review count goes from 0 to 1. The test sees the change and
-correctly flags the leak. \edit{Change it to the embedding case. This paper should focus on the embedding case, since simple graph count is easy to verify, also it could be viewed as a simple case of embedding.}
-\cpart{When it fails.} Now take a compliant pipeline that retrains its
-embeddings daily from a fresh random initialization. Even run twice on the same
-input, it gives every item a slightly different embedding, the Espresso machine
-included. The test fires on noise. \edit{It has a easy fix by fixing the random seed. Let's say the counter example is because the opt-in edge change from neighbors can propagate to the local embedding.} 
-\edit{The principal of this test is to capture the single node change from opt-out edges, while C1 is about difference in differences. We should push C2 to be C1, since we should always start the chapter from the simplest idea, then stating the original C1 as C2. Make sure each para title reflects the heuristic. Put the randomness as the final point about when it fails.}
-\cpart{Fix.} Compare against a control group of items whose inputs did not
-change, which measures how much features move for no reason (T2). On
-compliant pipelines, the naive test alarms on 100\% of simulated days and
-100\% of real days, and T2 on 3\% and 0\% (Table~\ref{tab:naive}).
+\paragraph{Pitfall 5: ``Tomorrow's interactions are a fair, independent reference.''}
+A better reference than random pairs has the same structure but no possible
+leak: for instance, pairs that customers co-purchase only \emph{tomorrow},
+which today's pipeline cannot have seen. In our simulator, where customers
+draw baskets independently from stationary preferences, such tests are close
+to calibrated, with false alarms on 2--4\% of days. Real behavior breaks the
+heuristic in three ways. First, units are dependent: browsing comes in
+sessions, and one customer contributes many correlated pairs and edges, so
+treating them as independent overstates the evidence. Second, behavior
+drifts: this week's items differ from next week's, so tomorrow's interactions
+are not exchangeable with today's. On RetailRocket, the same tests alarm on
+29\% (pairs) and 13\% (edges) of compliant days. Third, the reference can be
+selected. Edges defined as ``present tomorrow but not today'' exclude, by
+construction, the items a customer keeps buying, which are the items most
+similar to the rest of her basket. In the simulator, this alone makes a
+customer's suspect edges look closer to her basket than her reference edges,
+and a test against a compliant co-occurrence embedding (R2) alarms on 17 of
+20 days.
 
-\textbf{C3: Embeddings have no fixed coordinates.}
-
-\edit{Merge it with the single node case.}
-\cpart{Naive test.} For items whose inputs did not change, compare yesterday's
-and today's embeddings coordinate by coordinate, and flag large differences.
-\cpart{When it works.} Suppose retraining is warm-started from yesterday's
-parameters, so the coordinates are stable from day to day. A leak then shows
-up as a localized coordinate shift near Bob's items, and the test finds it.
-\cpart{When it fails.} Now suppose Tuesday's retraining produces exactly
-Monday's geometry, but rotated. All distances and angles are unchanged, yet
-every coordinate of every item differs. The test flags the entire catalog.
-\cpart{Fix.} Align the two spaces first, e.g., with orthogonal
-Procrustes~\citep{schonemann1966procrustes}, or compare only quantities that
-rotations preserve, such as norms and cosine similarities. When embeddings are
-retrained from a random initialization each day, the naive test alarms on
-100\% of simulated and real days. Alignment cuts the median relative change of
-input-unchanged items from 1.40 to 0.014. In the simulator, the rule then never
-alarms. On real data it still alarms every day, because sparse items keep
-noisy embeddings (C2). T2 therefore aligns \emph{and} compares against a control
-group (Table~\ref{tab:naive}).
-
-\textbf{C4: Features depend on more than immediate neighbors.}
-\edit{Merge it with the single node case. }
-\cpart{Naive test.} Restrict attention to items whose opted-in \emph{direct}
-neighbors are unchanged. Their features should then be unchanged, or move only
-by noise. If they move more when an opted-out edge changes, conclude leakage.
-\cpart{When it works.} For a 1-hop aggregate such as a purchase count, the test
-is exact. The Grinder's opted-in buyers are unchanged, so its count must be
-unchanged. If Bob buys a second grinder and the count rises, that is a leak.
-\cpart{When it fails.} Now suppose the embeddings come from a two-layer GNN. The
-Grinder's embedding then depends on its buyers \emph{and on everything those
-buyers bought}. On Tuesday, Carol buys a new teapot. The Grinder's direct
-neighbors are unchanged, but its embedding legitimately moves. If such
-movements happen more often to items with opted-out changes, for example
-because both are popular, the test blames Bob.
-\cpart{Fix.} Check invariance over the pipeline's true receptive field ($k$
-hops), which the auditor may have to estimate (T2). A component fit on the
-whole graph, such as a matrix factorization, has an unbounded receptive field.
-In our experiments this effect was small. With a 1-hop check, T2's embedding
-test alarms on 8\% of simulated days and 0\% of real days, against 5\% and 0\%
-with the 2-hop check (Table~\ref{tab:naive}). The changes a 1-hop check misses
-hit treated and control items alike, so they bias the comparison only when
-receptive-field churn correlates with treatment. The 2-hop check costs little
-and removes that risk.
-
-\textbf{C5: The same pair can change edge type.}
-
-\edit{Delete this case. }
-\cpart{Naive test.} Represent each item's opted-in neighborhood as the
-\emph{set of customers} who touched it. If that set is unchanged but a feature
-changed, conclude leakage.
-\cpart{When it works.} If the platform logs a single interaction type, such as
-purchases only, the customer set fully determines the opted-in input, and the
-test is sound.
-\cpart{When it fails.} With several types, the customer set is not enough. On
-Monday, Alice viewed the Grinder, and on Tuesday she buys it. The set of
-customers touching the Grinder is unchanged, but its purchase count correctly
-rises from 1 to 2. The test sees an unexplained change and blames Bob.
-\cpart{Fix.} Track \emph{typed} edges. With untyped invariance, T2's exact
-aggregate check alarms on 46\% of simulated days and 70\% of real days, where
-views often turn into purchases. With typed invariance, it alarms on 0\% and
-0\% (Table~\ref{tab:naive}).
-
-\textbf{C6: The scope of an opt-out must be defined.}
-
-\edit{Delete; Let's make the scope clear in the setting}
-
-\cpart{Naive test.} Build the expected $\Ein$ by applying each customer's
-\emph{current} status to all of their history, then run any of the tests
-above.
-\cpart{When it works.} If the pipeline uses only the current day's
-interactions, history is irrelevant, and current status is the only sensible
-definition.
-\cpart{When it fails.} Suppose the pipeline computes 30-day purchase counts.
-Dan opts out on Tuesday. His Monday purchase of the Kettle happened while he
-was opted in. A pipeline that follows a prospective policy keeps that
-purchase, which is a defensible choice. The naive test, which assumes a
-retroactive policy, flags it as a leak. The opposite assumption produces the
-opposite error.
-\cpart{Fix.} Agree on the opt-out policy before testing, and derive $\Ein$ from
-that definition. On real data with a 7-day window, a retroactive auditor
-checking a prospective pipeline alarms on 90\% of days. With the agreed policy,
-it alarms on 0\% (Table~\ref{tab:naive}). Our simulator keeps no history, so
-C6 does not arise there.
-
-\textbf{C7: Real behavior is dependent and drifts.}
-
-\edit{Merge with the difference in difference case}
-
-\cpart{Naive test.} Treat the units of a test (item pairs in T5, edges in T6,
-items in T4) as independent. Take the reference from a single side of the
-current window, such as tomorrow's interactions.
-\cpart{When it works.} In our simulator, customers draw their baskets
-independently from stationary preferences. There, the original T5 and T6
-raise false alarms on 2--4\% of days, close to the nominal 5\%.
-\cpart{When it fails.} Real browsing comes in sessions and drifts over time. A
-customer views several related items in one sitting, so pairs and edges from
-the same customer are correlated. This week's items differ from next week's,
-so tomorrow's interactions are not exchangeable with the current window. On
-RetailRocket, the same tests raise false alarms on 29\% (T5) and
-13\% (T6) of compliant days, and T4 on 17\%.
-\cpart{Fix.} Use the customer as the unit: at most one pair per customer in T5,
-and per-customer paired differences in T6. Bracket the window in time: draw
-the reference from both the interactions that just \emph{left} the window and
-those that \emph{enter} it next. In T6, also exclude same-day items from each
-edge's context, so that session coherence cannot favor suspect edges. With
-these refinements, false alarms fall to 0\% and 0\% on real data
-(Section~\ref{sec:real}).
+\paragraph{Ideas for the fix.}
+A stricter filter on the suspect pairs cannot remove the confounding of
+Pitfall~4. What works is a reference group with the same tastes, the same
+indirect paths and the same sparsity, but no possible leak. Pitfall~5 then
+dictates how to build and use it: take the customer as the unit; bracket the
+window in time, drawing references both from interactions that just
+\emph{left} the window and from those that \emph{enter} it next; and select
+suspect and reference units by the same rule. In Section~\ref{sec:tests} we
+introduce two tests built this way: a co-occurrence test with a temporal
+placebo (T5) and an edge-level membership test (T6). With these refinements,
+neither raises a false alarm on real data (Section~\ref{sec:real}).
 
 %=====================================================================
 \section{Audit Tests}\label{sec:tests}
@@ -672,13 +806,13 @@ simulation.
 
 \paragraph{Avoiding the pitfalls.}
 T1 is the most robust passive test, because canaries and cold items receive
-the same, empty, opted-in input. Correlated behavior (C1) therefore cannot make
-them differ, and neither can changes elsewhere in the graph (C4), which reach
-both groups only through the same global state. One residual form of C1
+the same, empty, opted-in input. Correlated behavior (P4) therefore cannot make
+them differ, and neither can changes elsewhere in the graph (P1), which reach
+both groups only through the same global state. One residual form of P4
 remains: someone \emph{chose} to buy the Tea scoop, so canaries may be
 intrinsically more attractive than cold items. This is why we match on $x_i$.
 Finally, the feature norm is unchanged by rotations of the embedding space
-(C3), so no alignment is needed.
+(P2), so no alignment is needed.
 
 \subsection{T2: Zero-difference on invariant neighborhoods}
 T2 compares how much features move overnight for two groups of items whose
@@ -728,11 +862,11 @@ may also move control items under a leak. That dilutes the contrast and costs
 power, but it cannot cause false alarms.
 
 \paragraph{Avoiding the pitfalls.}
-The control group measures the noise floor, so random retraining (C2) moves
-both groups alike. Embeddings are aligned before comparison (C3). Invariance is
-checked over the full receptive field, not just direct neighbors (C4), and on
-typed edges (C5). Finally, treated and control items have identical opted-in
-inputs on both days, so correlated behavior (C1) cannot separate them.
+The control group measures the noise floor, so random retraining (P3) moves
+both groups alike. Embeddings are aligned before comparison (P2). Invariance is
+checked over the full receptive field, not just direct neighbors (P1), and on
+typed edges, since a pair can change type (Section~\ref{sec:problem}). Finally, treated and control items have identical opted-in
+inputs on both days, so correlated behavior (P4) cannot separate them.
 
 \subsection{T3: Status-switch difference-in-differences}
 T3 checks that a customer's contribution disappears, or appears, on the day
@@ -741,7 +875,7 @@ their status changes.
 \paragraph{Status switch.}
 A customer \emph{switches} when their opt-out status changes between days $t$ and
 $t{+}1$. In Figure~\ref{fig:running}, Dan opts out on Tuesday. Under a
-retroactive policy (the choice discussed in C6), all of Dan's edges move from
+retroactive scope of Section~\ref{sec:problem}, all of Dan's edges move from
 $\Ein$ to $\Eout$ on that day. Call the items Dan touched \emph{affected} items.
 Here, the Kettle is affected.
 
@@ -790,9 +924,9 @@ violation.
 
 \paragraph{Avoiding the pitfalls.}
 Comparison items have the same kind of opted-in change on the same day, so
-correlated behavior (C1) and retraining noise (C2) affect both groups alike.
-Embeddings are aligned before comparison (C3). Edge changes are matched on type
-(C5), and the opt-out policy is fixed in advance (C6).
+correlated behavior (P4) and retraining noise (P3) affect both groups alike.
+Embeddings are aligned before comparison (P2). Edge changes are matched on type,
+and the opt-out scope is fixed in advance (Section~\ref{sec:problem}).
 
 \paragraph{What it adds.}
 T3 targets how status changes propagate through the pipeline: stale consent
@@ -833,12 +967,12 @@ it is weak, because a count of opted-out edges discards \emph{which} edges
 leaked.
 
 \paragraph{Avoiding the pitfalls.}
-The surrogate $Z$ is what protects T4 against correlated behavior (C1). Model A
+The surrogate $Z$ is what protects T4 against correlated behavior (P4). Model A
 already uses everything $Z$ knows about $\Ein$, so model B can only win with
 information that $Z$ lacks. The protection is only as good as $Z$. If $F$
 encodes opted-in information that $Z$ misses, false alarms are possible. In our
 experiments the test is conservative. Both models predict a per-item target
-from a single day's features, so randomness (C2) and rotations (C3) act as
+from a single day's features, so randomness (P3) and rotations (P2) act as
 noise, not bias.
 
 \begin{figure*}[t]
@@ -922,7 +1056,7 @@ Figure~\ref{fig:running}, (Grinder, Tea scoop) is a real pair, because only Bob
 bought both.
 
 \paragraph{Placebo pairs.}
-Comparing real pairs with random item pairs is the naive test of C1, and it
+Comparing real pairs with random item pairs is the naive test of Pitfall~4, and it
 fails because shared taste makes real pairs similar anyway. We therefore
 need a reference group with the same taste-driven similarity but no possible
 leak. Let $\mathcal{Q}^t$ contain the pairs that co-occur only through interactions
@@ -947,16 +1081,16 @@ therefore dependent, which makes standard errors too small. We subsample pairs
 so that no item appears twice. We then regress similarity on group membership
 and the two items' log degrees, and test the group coefficient.
 Section~\ref{sec:exp} shows that both details are necessary. Real data needs
-two further refinements (C7). First, each customer contributes at most one
+two further refinements (P5). First, each customer contributes at most one
 pair, because pairs from one browsing session are correlated. Second, the
 placebo brackets the window in time. It combines pairs that co-occur only
 through interactions that \emph{left} the window on day $t$ with pairs that
 co-occur only through interactions that \emph{enter} it on day $t{+}1$.
 
 \paragraph{Avoiding the pitfalls.}
-The placebo absorbs correlated behavior (C1). Both groups are scored with
-the same day's features, so randomness (C2) affects them alike. Cosine
-similarity within one embedding space is unchanged by rotations (C3).
+The placebo absorbs correlated behavior (P4). Both groups are scored with
+the same day's features, so randomness (P3) affects them alike. Cosine
+similarity within one embedding space is unchanged by rotations (P2).
 
 \subsection{T6: Edge-level membership inference}
 T6 asks directly whether the pipeline \emph{remembers} individual opted-out edges.
@@ -1035,16 +1169,22 @@ derived from $F$. Features computed from the edge lists, such as an item's
 degree, include the edge itself and so encode the group by construction. With
 them, the learned scorer rejected $H_0$ on 75\% of clean days. With $F$-derived
 features only, it is calibrated, but in our simulator it does not beat the
-cosine score. On real data, two refinements are needed (C7). The reference
+cosine score. On real data, two refinements are needed (P5). The reference
 also includes the customer's edges that just left the window, which brackets
 it in time. Each suspect edge's context also excludes items from the same day,
-so that session coherence cannot favor suspect edges.
+so that session coherence cannot favor suspect edges. Edges that just left or
+entered the window again exclude the items a customer keeps. In the simulator,
+where a basket is redrawn as a whole, we therefore also drop suspect edges
+whose item appears in the customer's previous or next basket, so that both
+groups are selected by the same rule (Pitfall~5). Without this, the test
+alarms on 17 of 20 compliant days for a co-occurrence embedding (R2); with it,
+on 0 of 100.
 
 \paragraph{Avoiding the pitfalls.}
-OUT and FRESH come from the same customers, so correlated behavior (C1)
+OUT and FRESH come from the same customers, so correlated behavior (P4)
 cancels. Both groups are scored with the same day's features, so retraining
-noise (C2) affects them alike, and cosine similarity within one embedding
-space is unchanged by rotations (C3).
+noise (P3) affects them alike, and cosine similarity within one embedding
+space is unchanged by rotations (P2).
 
 \subsection{T7: Active canaries as a reference test}
 T1--T6 are \emph{passive}: they use only data the platform produces anyway. If
@@ -1069,9 +1209,9 @@ canary accounts' own features must equal the default.
 
 \paragraph{Avoiding the pitfalls.}
 None of the pitfalls of Section~\ref{sec:challenges} applies. Random assignment
-breaks any link between treatment and behavior (C1). Noise and rotations affect
-treated and control items alike (C2, C3). No locality assumption is needed
-(C4).
+breaks any link between treatment and behavior (P4). Noise and rotations affect
+treated and control items alike (P2, P3). No locality assumption is needed
+(P1).
 
 \paragraph{Role as a baseline.}
 T7's validity is guaranteed and its power is set by the canary budget, so it
@@ -1221,48 +1361,64 @@ opted-out customers with both suspect and reference edges for T6.
 \subsection{Naive tests fail}\label{sec:naive}
 Table~\ref{tab:naive} runs each naive test of Section~\ref{sec:challenges}, and
 its fix, on compliant pipelines, so every alarm is a false alarm. The real-data
-columns use the RetailRocket setup of Section~\ref{sec:real}. For C3 we rotate
-the embedding block by a random orthogonal matrix each day, to emulate
-retraining from a random initialization. All of our tests are invariant to this
-rotation.
+columns use the RetailRocket setup of Section~\ref{sec:real}. The single-node
+rows use two compliant representations with no leak: the deterministic
+one-layer propagation of Table~\ref{tab:running} (``propagation'') and a
+rank-16 randomized SVD of the type-weighted interaction matrix
+(``factorization''), run either with a fresh seed each day or with a fixed
+seed. The naive test looks at items whose typed opted-in edges are unchanged
+and whose opted-out edges changed, about 41 items per day in the simulator and
+386 on real data. For P2 we rotate the embedding block by a random orthogonal
+matrix each day, to emulate retraining from a random initialization.
 
 \begin{table}[t]
 \centering\footnotesize
-\setlength{\tabcolsep}{2.4pt}
-\begin{tabular}{@{}llcccc@{}}
+\setlength{\tabcolsep}{2.2pt}
+\begin{tabular}{@{}l>{\raggedright}p{1.42in}cccc@{}}
 \toprule
- & & \multicolumn{2}{c}{Naive} & \multicolumn{2}{c}{Fixed} \\
+ & & \multicolumn{2}{c}{Naive} & \multicolumn{2}{c}{Fix} \\
 \cmidrule(lr){3-4}\cmidrule(l){5-6}
  & Naive test $\rightarrow$ fix & Sim. & Real & Sim. & Real \\
 \midrule
-C1 & opted-out pairs vs.\ random $\rightarrow$ T5 & 100 & 100 & 2 & 0$^\dagger$ \\
+\multicolumn{6}{@{}l}{\emph{Single node}}\\
+P1 & propagation changed, 1-hop $\rightarrow$ 2-hop invariance & 28 & 100 & 0 & 0 \\
+P2 & raw coordinates $\rightarrow$ aligned & 100 & 100 & 0 & 100$^\ddagger$ \\
+P3 & factorization changed, fresh $\rightarrow$ fixed seed & 100 & 100 & 100$^\S$ & 100$^\S$ \\
+P1--3 & factorization changed $\rightarrow$ T2 & 100 & 100 & 6 & 7 \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{Difference in differences}}\\
+P4 & opted-out pairs vs.\ random $\rightarrow$ T5 & 100 & 100 & 2 & 0$^\dagger$ \\
    & \emph{only}-opted-out pairs vs.\ random & 94 & 100 & & \\
-C2 & feature changed $\rightarrow$ T2 & 100 & 100 & 3 & 0 \\
-C3 & raw coordinates $\rightarrow$ aligned & 100 & 100 & 0 & 100$^\ddagger$ \\
-C4 & 1-hop $\rightarrow$ 2-hop invariance & 8 & 0 & 5 & 0 \\
-C5 & untyped $\rightarrow$ typed invariance & 46 & 70 & 0 & 0 \\
-C6 & retroactive auditor $\rightarrow$ agreed policy & -- & 90 & -- & 0 \\
-C7 & basic $\rightarrow$ refined T5 / T6 & 2\,/\,4 & 29\,/\,13 & 7.5\,/\,5 & 0\,/\,0 \\
+P5 & basic $\rightarrow$ refined T5\,/\,T6 & 2\,/\,4 & 29\,/\,13 & 7.5\,/\,5 & 0\,/\,0 \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{Setting}}\\
+scope & retroactive auditor $\rightarrow$ agreed scope & -- & 90 & -- & 0 \\
+types & untyped $\rightarrow$ typed invariance & 46 & 70 & 0 & 0 \\
 \bottomrule
 \end{tabular}
-\caption{False-alarm rate (\% of days, $\alpha=0.05$) of each naive test and its fix on compliant pipelines: 300 simulated and 40 real days (200 and 56--98 for C7). $^\dagger$Refined T5 (C7); the basic T5 alarms on 29\% of real days. $^\ddagger$Alignment removes the rotation (the median relative change falls from 1.40 to 0.014), but sparse real items keep a heavy tail of unstable embeddings, which only T2's control group absorbs (0\%).}
+\caption{False-alarm rate (\% of days, $\alpha=0.05$) of each naive test and its fix on compliant pipelines: 300 simulated and 28--40 real days (200 and 56--98 for P5). $^\S$A fixed seed removes the noise but not the global drift of P1. $^\dagger$Refined T5; the basic T5 alarms on 29\% of real days. $^\ddagger$Alignment removes the rotation (the median relative change falls from 1.40 to 0.014), but sparse real items keep a heavy tail of unstable embeddings, which only T2's control group absorbs. ``Types'': T2's exact check on counts when edge types are ignored.}
 \label{tab:naive}
 \end{table}
 
 Four findings stand out.
 \begin{itemize}
-  \item C1, C2, C3, C5 and C6 break their naive tests on almost every day, on
-        both data sources, and the fixes restore calibration. The stricter
-        ``only'' filter of C1 barely helps: 94\% and 100\%.
-  \item C4 did not cause false alarms in our pipelines. The 2-hop changes that a
-        1-hop check misses affect treated and control items alike, so they bias
-        T2 only when receptive-field churn correlates with treatment. We keep
-        the 2-hop check because it is cheap and safe.
-  \item On real data, alignment alone does not rescue the coordinate rule of
-        C3. It removes the rotation, but not the noise of sparse items. T2
-        handles both.
-  \item C7 appears only on real data, where the basic T5 and T6 alarm on 29\%
-        and 13\% of compliant days. The refined versions alarm on none.
+  \item The single-node naive test is exact for counts (0\% false alarms on
+        both data sources) but fails for every representation. Propagation
+        alone breaks it on 28\% of simulated and 100\% of real days, where
+        neighbors' baskets change constantly; checking invariance over two
+        hops fixes it completely, because this propagation reads exactly two
+        hops.
+  \item For a factorization, no local repair suffices. A fixed seed and
+        alignment leave the false-alarm rate at 100\%, because a global fit
+        moves with every opted-in change. Only the comparison with control
+        items (T2) brings it to 6\% and 7\%.
+  \item The difference-in-differences tests need a structured reference. The
+        stricter ``only'' filter of P4 barely helps (94\% and 100\%), and P5
+        appears only on real data, where the basic T5 and T6 alarm on 29\% and
+        13\% of compliant days and the refined versions on none.
+  \item The setting matters as much as the test: an auditor who assumes the
+        wrong opt-out scope, or ignores that a pair can change edge type,
+        alarms on most real days.
 \end{itemize}
 
 %---------------------------------------------------------------------
@@ -1418,7 +1574,7 @@ alarm to day 1.
 
 \paragraph{Behavioral tests need the refinements.}
 The basic T4, T5 and T6 rely on exchangeable behavior, and they alarm on 17\%,
-29\% and 13\% of compliant days (C7). The refined T5 and T6 raise no false alarm
+29\% and 13\% of compliant days (P5). The refined T5 and T6 raise no false alarm
 on 56 compliant days. They keep full power at $\rho=1$, but detect little at
 $\rho=0.1$ (0--5\% of days). On synthetic data, the refined T5 alarms on 7.5\% of
 200 compliant days, slightly above the nominal 5\%, and the refined T6 on 5\%.
@@ -1434,7 +1590,121 @@ facts, an empty or unchanged receptive field (T1, T2), carry over from the
 simulator unchanged and stay powerful. Tests built on behavioral
 exchangeability (T4, T5, T6) are sound in the simulator but need cluster-aware
 units and time-bracketed references on real data. A null study on real data
-is therefore not optional. It is what revealed C7.
+is therefore not optional. It is what revealed P5.
+
+%---------------------------------------------------------------------
+\subsection{Feature families as test targets}\label{sec:families}
+The pipelines above mix several feature types into one vector. Real feature
+stores keep them apart, and a leak usually affects one job. We therefore
+implement one representative of each family of Table~\ref{tab:families} and
+test each one separately.
+
+\paragraph{Targets.}
+A1 holds an item's typed counts and number of unique customers; A2, its
+conversion share (purchase-like edges over all edges) and mean interaction
+type; A3, a count decayed with a half-life of two days (real data only, since
+the simulator keeps no dates). R1 is a rank-16 randomized SVD of the
+type-weighted customer--item matrix, reseeded daily. R2 is a rank-16 SVD of the
+positive PMI matrix of item co-occurrence, the factorization that skip-gram
+item embeddings approximate~\citep{levy2014neural}. R3 is a LightGCN-style
+propagation of R1: half the item's own factor, half the mean factor of the
+items that share a customer with it. R4 averages the attributes $z$ (gender,
+birth year, a two-dimensional residence) of an item's customers. In the
+simulator, $z$ is correlated with each customer's preferences; RetailRocket
+publishes no attributes, so we draw them at random. Customer features average
+the item features over the customer's edges. A leaking job computes its
+feature from $\Ein$ plus the leaked opted-out edges, together with the
+attributes of the customers behind them in R4. We use per-customer leakage,
+the more common pattern, at $\rho=0.1$ and $\rho=1$.
+
+\paragraph{Tests.}
+T1 compares canaries with cold items. In all seven jobs, an item with no
+opted-in edge receives a deterministic default (a zero vector), so T1 is an
+exact check: any canary that differs from the default is a violation. T2 is
+exact for the 1-hop deterministic jobs (A1, A2, R4) and uses the aligned
+regression otherwise, with 2-hop invariance. T5 and T6 run on the
+representations, with the refinements of Pitfall~5.
+
+\begin{table}[t]
+\centering\footnotesize
+\setlength{\tabcolsep}{2.6pt}
+\begin{tabular}{@{}llcccccc@{}}
+\toprule
+ & & \multicolumn{3}{c}{Simulator} & \multicolumn{3}{c}{RetailRocket} \\
+\cmidrule(lr){3-5}\cmidrule(l){6-8}
+ & Test & clean & $0.1$ & $1$ & clean & $0.1$ & $1$ \\
+\midrule
+A1 & T1 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T2 & 0 & 100 & 100 & 0 & 100 & 100 \\
+\addlinespace[1pt]
+A2 & T1 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T2 & 0 & 97 & 100 & 0 & 100 & 100 \\
+\addlinespace[1pt]
+A3 & T1 & -- & -- & -- & 0 & 100 & 100 \\
+ & T2 & -- & -- & -- & 0 & 21 & 100 \\
+\addlinespace[1pt]
+R1 & T1 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T2 & 2 & 7 & 100 & 10 & 36 & 100 \\
+ & T5 & 2 & 10 & 100 & 5 & 79 & 100 \\
+ & T6 & 3 & 3 & 97 & 0 & 14 & 100 \\
+\addlinespace[1pt]
+R2 & T1 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T2 (2-hop) & 5 & 7 & 93 & 48 & 79 & 100 \\
+ & T2 (+3-hop churn) & 5 & 7 & 93 & 10 & 7 & 100 \\
+ & T5 & 1 & 33 & 100 & 5 & 57 & 100 \\
+ & T6 & 0 & 7 & 90 & 0 & 0 & 100 \\
+\addlinespace[1pt]
+R3 & T1 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T2 & 2 & 23 & 100 & 10 & 43 & 100 \\
+ & T5 & 0 & 10 & 100 & 5 & 86 & 100 \\
+ & T6 & 6 & 13 & 63 & 0 & 7 & 100 \\
+\addlinespace[1pt]
+R4 & T1 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T2 & 0 & 100 & 100 & 0 & 100 & 100 \\
+ & T5 & 6 & 23 & 97 & 0 & 29 & 100 \\
+ & T6 & 7 & 7 & 27 & 10 & 21 & 100 \\
+\bottomrule
+\end{tabular}
+\caption{Per-day rejection rate (\%, $\alpha=0.05$) for each feature family of Table~\ref{tab:families} tested separately. ``Clean'' is the false-alarm rate on compliant jobs (100 simulated and 21 real days); $0.1$ and $1$ are per-customer leak rates $\rho$ (30 simulated and 14 real days each).}
+\label{tab:famres}
+\end{table}
+
+\paragraph{Results.}
+Table~\ref{tab:famres} shows four patterns.
+\begin{itemize}
+  \item \emph{Local features are verified exactly.} For counts, rates and
+        attribute aggregation (A1, A2, R4), T1 and T2 never raise a false
+        alarm and catch every leaking day, even at $\rho=0.1$. R4 shows that
+        an attribute leak, where items absorb who opted-out customers are, is
+        as easy to catch as a count leak. The decayed count (A3) changes every
+        day by design, so T2 loses exactness and its power at $\rho=0.1$ drops
+        to 21\%; T1 remains exact.
+  \item \emph{Natural canaries carry the representations.} T1 catches every
+        leaking day for R1--R3 on both data sources, because a leaked
+        customer's niche items stop sitting at the cold default. This relies
+        on a deterministic default for never-seen items; a pipeline that
+        initializes them at random needs the permutation version of T1
+        (Section~\ref{sec:tests}).
+  \item \emph{Global representations are hard for the other tests at low leak
+        rates.} At $\rho=0.1$, T2, T5 and T6 detect 3--33\% of simulated days
+        for R1--R3, and 7--86\% of real days, with T5 the strongest. At
+        $\rho=1$ every test detects every or almost every day, except T6 on R3
+        (63\%) and R4 (27\%) in the simulator.
+  \item \emph{The receptive field must match the feature (Pitfall~1).} R2's
+        PMI weights divide by the co-occurrence totals of neighboring items,
+        so its receptive field is three hops, not two. With 2-hop invariance,
+        T2 alarms on 48\% of compliant real days. Adjusting the T2 regression
+        for opted-in churn at the third hop restores calibration (10\%, i.e.,
+        2 of 21 days) but costs most of its power at $\rho=0.1$. The same
+        adjustment over-corrects R1 and R3, so we apply it only where the
+        receptive field calls for it.
+\end{itemize}
+The remaining false-alarm rates of 6--10\% (R4 under T5 and T6, R1 and R3
+under T2 on real data) correspond to at most 2 of 21 real days or 7 of 100
+simulated days; they are compatible with the nominal 5\% at these sample
+sizes, but larger null studies would be needed to confirm calibration per
+family.
+
 
 %=====================================================================
 \section{Related Work}\label{sec:related}
@@ -1512,9 +1782,9 @@ references that separate memorization from homophily.
 Our real-data study is semi-synthetic: the interactions are real, but opt-outs
 and leaks are simulated, and RetailRocket has no merchant layer. Real opt-out
 decisions may correlate with behavior. Privacy-conscious customers may browse
-differently, which would add confounding beyond C7. Before deployment, every
+differently, which would add confounding beyond P5. Before deployment, every
 test should first be run on days or slices where compliance is known, such
-as a pipeline replica fed only $\Ein$. That is how we found C7. T4 is not
+as a pipeline replica fed only $\Ein$. That is how we found P5. T4 is not
 calibrated on real data, and the refined T5 is slightly anti-conservative in
 the simulator (7.5\%). Assumption~\ref{ass:local} and the exchangeability behind
 the placebo references are modeling choices that seasonality or product
@@ -1546,15 +1816,20 @@ bound.
 Angrist, J.~D., and Pischke, J.-S. 2009.
 \newblock \emph{Mostly Harmless Econometrics}. Princeton University Press.
 
-\bibitem[Borisyuk et~al.(2024)]{borisyuk2024lignn}
-Borisyuk, F.; He, S.; Ouyang, Y.; Ramezani, M.; Du, P.; et~al. 2024.
-\newblock LiGNN: Graph neural networks at LinkedIn.
-\newblock In \emph{KDD}.
+\bibitem[Barkan and Koenigstein(2016)]{barkan2016item2vec}
+Barkan, O.; and Koenigstein, N. 2016.
+\newblock Item2vec: Neural item embedding for collaborative filtering.
+\newblock In \emph{IEEE International Workshop on Machine Learning for Signal Processing (MLSP)}.
 
 \bibitem[Biega and Finck(2021)]{biega2021reviving}
 Biega, A.~J., and Finck, M. 2021.
 \newblock Reviving purpose limitation and data minimisation in data-driven systems.
 \newblock \emph{Technology and Regulation} 2021:44--61.
+
+\bibitem[Borisyuk et~al.(2024)]{borisyuk2024lignn}
+Borisyuk, F.; He, S.; Ouyang, Y.; Ramezani, M.; Du, P.; et~al. 2024.
+\newblock LiGNN: Graph neural networks at LinkedIn.
+\newblock In \emph{KDD}.
 
 \bibitem[Bourtoule et~al.(2021)]{bourtoule2021machine}
 Bourtoule, L.; Chandrasekaran, V.; Choquette-Choo, C.~A.; et~al. 2021.
@@ -1581,10 +1856,20 @@ Chen, C.; Sun, F.; Zhang, M.; and Ding, B. 2022b.
 \newblock Recommendation unlearning.
 \newblock In \emph{The Web Conference (WWW)}.
 
+\bibitem[Cheng et~al.(2016)]{cheng2016wide}
+Cheng, H.-T.; Koc, L.; Harmsen, J.; et~al. 2016.
+\newblock Wide \& deep learning for recommender systems.
+\newblock In \emph{Workshop on Deep Learning for Recommender Systems (DLRS)}.
+
 \bibitem[Chernozhukov et~al.(2018)]{chernozhukov2018double}
 Chernozhukov, V.; Chetverikov, D.; Demirer, M.; Duflo, E.; Hansen, C.; Newey, W.; and Robins, J. 2018.
 \newblock Double/debiased machine learning for treatment and structural parameters.
 \newblock \emph{The Econometrics Journal} 21(1).
+
+\bibitem[Covington, Adams, and Sargin(2016)]{covington2016deep}
+Covington, P.; Adams, J.; and Sargin, E. 2016.
+\newblock Deep neural networks for {YouTube} recommendations.
+\newblock In \emph{ACM RecSys}.
 
 \bibitem[Eisenhofer et~al.(2025)]{eisenhofer2025verifiable}
 Eisenhofer, T.; Riepel, D.; Chandrasekaran, V.; Ghosh, E.; Ohrimenko, O.; and Papernot, N. 2025.
@@ -1606,15 +1891,20 @@ Frasca, F.; Rossi, E.; Eynard, D.; Chamberlain, B.; Bronstein, M.; and Monti, F.
 \newblock SIGN: Scalable inception graph neural networks.
 \newblock \emph{arXiv:2004.11198}.
 
+\bibitem[Ginart et~al.(2019)]{ginart2019making}
+Ginart, A.; Guan, M.; Valiant, G.; and Zou, J. 2019.
+\newblock Making AI forget you: Data deletion in machine learning.
+\newblock In \emph{NeurIPS}.
+
 \bibitem[Grbovic and Cheng(2018)]{grbovic2018real}
 Grbovic, M., and Cheng, H. 2018.
 \newblock Real-time personalization using embeddings for search ranking at Airbnb.
 \newblock In \emph{KDD}.
 
-\bibitem[Ginart et~al.(2019)]{ginart2019making}
-Ginart, A.; Guan, M.; Valiant, G.; and Zou, J. 2019.
-\newblock Making AI forget you: Data deletion in machine learning.
-\newblock In \emph{NeurIPS}.
+\bibitem[Grover and Leskovec(2016)]{grover2016node2vec}
+Grover, A.; and Leskovec, J. 2016.
+\newblock node2vec: Scalable feature learning for networks.
+\newblock In \emph{ACM KDD}.
 
 \bibitem[Halko, Martinsson, and Tropp(2011)]{halko2011finding}
 Halko, N.; Martinsson, P.-G.; and Tropp, J.~A. 2011.
@@ -1626,20 +1916,20 @@ Hamilton, W.; Ying, Z.; and Leskovec, J. 2017.
 \newblock Inductive representation learning on large graphs.
 \newblock In \emph{NeurIPS}.
 
-\bibitem[Hermann and Del~Balso(2017)]{hermann2017michelangelo}
-Hermann, J., and Del~Balso, M. 2017.
-\newblock Meet Michelangelo: Uber's machine learning platform.
-\newblock Uber Engineering Blog. \url{https://www.uber.com/blog/michelangelo-machine-learning-platform/}.
+\bibitem[He et~al.(2020)]{he2020lightgcn}
+He, X.; Deng, K.; Wang, X.; Li, Y.; Zhang, Y.; and Wang, M. 2020.
+\newblock LightGCN: Simplifying and powering graph convolution network for recommendation.
+\newblock In \emph{SIGIR}.
 
 \bibitem[He et~al.(2021)]{he2021stealing}
 He, X.; Jia, J.; Backes, M.; Gong, N.~Z.; and Zhang, Y. 2021.
 \newblock Stealing links from graph neural networks.
 \newblock In \emph{USENIX Security Symposium}.
 
-\bibitem[He et~al.(2020)]{he2020lightgcn}
-He, X.; Deng, K.; Wang, X.; Li, Y.; Zhang, Y.; and Wang, M. 2020.
-\newblock LightGCN: Simplifying and powering graph convolution network for recommendation.
-\newblock In \emph{SIGIR}.
+\bibitem[Hermann and Del~Balso(2017)]{hermann2017michelangelo}
+Hermann, J., and Del~Balso, M. 2017.
+\newblock Meet Michelangelo: Uber's machine learning platform.
+\newblock Uber Engineering Blog. \url{https://www.uber.com/blog/michelangelo-machine-learning-platform/}.
 
 \bibitem[Huang, Gong, and Reiter(2024)]{huang2024general}
 Huang, Z.; Gong, N.~Z.; and Reiter, M.~K. 2024.
@@ -1655,6 +1945,21 @@ Jagielski, M.; Ullman, J.; and Oprea, A. 2020.
 Koch, M. 2018.
 \newblock Personalized store feed with vector embeddings.
 \newblock DoorDash Engineering Blog.
+
+\bibitem[Koren, Bell, and Volinsky(2009)]{koren2009matrix}
+Koren, Y.; Bell, R.; and Volinsky, C. 2009.
+\newblock Matrix factorization techniques for recommender systems.
+\newblock \emph{Computer} 42(8): 30--37.
+
+\bibitem[Levy and Goldberg(2014)]{levy2014neural}
+Levy, O.; and Goldberg, Y. 2014.
+\newblock Neural word embedding as implicit matrix factorization.
+\newblock In \emph{NeurIPS}.
+
+\bibitem[Liu et~al.(2022)]{liu2022a2gcn}
+Liu, F.; Cheng, Z.; Zhu, L.; Liu, C.; and Nie, L. 2022.
+\newblock An attribute-aware attentive {GCN} model for attribute missing in recommendation.
+\newblock \emph{IEEE Transactions on Knowledge and Data Engineering} 34(9): 4077--4088.
 
 \bibitem[Liu, Iqbal, and Saxena(2024)]{liu2024optedout}
 Liu, Z.; Iqbal, U.; and Saxena, N. 2024.
@@ -1676,15 +1981,15 @@ Olatunji, I.~E.; Nejdl, W.; and Khosla, M. 2021.
 \newblock Membership inference attack on graph neural networks.
 \newblock In \emph{IEEE TPS-ISA}.
 
-\bibitem[RetailRocket(2016)]{retailrocket}
-RetailRocket. 2016.
-\newblock Retailrocket recommender system dataset.
-\newblock Kaggle. \url{https://www.kaggle.com/retailrocket/ecommerce-dataset}.
-
 \bibitem[Ramdas et~al.(2023)]{ramdas2023game}
 Ramdas, A.; Gr{\"u}nwald, P.; Vovk, V.; and Shafer, G. 2023.
 \newblock Game-theoretic statistics and safe anytime-valid inference.
 \newblock \emph{Statistical Science} 38(4).
+
+\bibitem[RetailRocket(2016)]{retailrocket}
+RetailRocket. 2016.
+\newblock Retailrocket recommender system dataset.
+\newblock Kaggle. \url{https://www.kaggle.com/retailrocket/ecommerce-dataset}.
 
 \bibitem[Sarda et~al.(2019)]{sarda2019ubereats}
 Sarda, A.; Jain, A.; Liu, I.; et~al. 2019.
@@ -1721,11 +2026,6 @@ Steinke, T.; Nasr, M.; and Jagielski, M. 2023.
 \newblock Privacy auditing with one (1) training run.
 \newblock In \emph{NeurIPS}.
 
-\bibitem[Tianchi(2015)]{tmall2015}
-Alibaba Tianchi. 2015.
-\newblock Repeat buyers prediction after sales promotion (IJCAI-15 competition dataset).
-\newblock \url{https://tianchi.aliyun.com/}.
-
 \bibitem[Tianchi(2018)]{taobao2018}
 Alibaba Tianchi. 2018.
 \newblock User behavior data from Taobao for recommendation.
@@ -1736,6 +2036,11 @@ Thudi, A.; Jia, H.; Shumailov, I.; and Papernot, N. 2022.
 \newblock On the necessity of auditable algorithmic definitions for machine unlearning.
 \newblock In \emph{USENIX Security Symposium}.
 
+\bibitem[Tianchi(2015)]{tmall2015}
+Alibaba Tianchi. 2015.
+\newblock Repeat buyers prediction after sales promotion (IJCAI-15 competition dataset).
+\newblock \url{https://tianchi.aliyun.com/}.
+
 \bibitem[Vovk and Wang(2021)]{vovk2021evalues}
 Vovk, V., and Wang, R. 2021.
 \newblock E-values: Calibration, combination and applications.
@@ -1745,6 +2050,11 @@ Vovk, V., and Wang, R. 2021.
 Wang, J.; Huang, P.; Zhao, H.; Zhang, Z.; Zhao, B.; and Lee, D.~L. 2018.
 \newblock Billion-scale commodity embedding for e-commerce recommendation in Alibaba.
 \newblock In \emph{KDD}.
+
+\bibitem[Yi et~al.(2019)]{yi2019sampling}
+Yi, X.; Yang, J.; Hong, L.; Cheng, D.~Z.; Heldt, L.; Kumthekar, A.; Zhao, Z.; Wei, L.; and Chi, E. 2019.
+\newblock Sampling-bias-corrected neural modeling for large corpus item recommendations.
+\newblock In \emph{ACM RecSys}.
 
 \bibitem[Ying et~al.(2018)]{ying2018graph}
 Ying, R.; He, R.; Chen, K.; Eksombatchai, P.; Hamilton, W.~L.; and Leskovec, J. 2018.
